@@ -1,0 +1,5 @@
+streamlit>=1.40
+pandas>=2.1
+numpy>=1.26
+pulp>=2.8,<3
+scipy>=1.11
