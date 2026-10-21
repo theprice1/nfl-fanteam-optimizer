@@ -13,10 +13,13 @@ Command line (run from the project folder):
 Be a polite visitor: fetch once or twice a week, not in a loop. Check the site's terms and
 robots.txt (https://dailyfantasy.tips/robots.txt) before automating, and keep this for personal use.
 """
+
 from __future__ import annotations
 
 import argparse
 import re
+import ssl
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
@@ -35,7 +38,9 @@ REQUIRED = {"player", "pos", "team", "salary", "proj"}
 class Table:
     headers: list[str]
     rows: list[list[str]]
-    headings: list[str] = field(default_factory=list)  # nearest preceding h1-h4 texts, newest last
+    headings: list[str] = field(
+        default_factory=list
+    )  # nearest preceding h1-h4 texts, newest last
 
 
 class _TableParser(HTMLParser):
@@ -94,10 +99,35 @@ class _TableParser(HTMLParser):
         self.page_text.append(data)
 
 
-def fetch_html(url: str = URL, timeout: int = 25) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - fixed https URL
+def _open(url: str, timeout: int, context: ssl.SSLContext | None):
+    req = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT, "Accept": "text/html"}
+    )
+    with urllib.request.urlopen(req, timeout=timeout, context=context) as resp:
         return resp.read().decode("utf-8", errors="replace")
+
+
+def fetch_html(url: str = URL, timeout: int = 25) -> str:
+    """Fetch the page. Verification stays ON; if the system certificate store is stale, retry with certifi's bundle."""
+    try:
+        return _open(url, timeout, None)
+    except (ssl.SSLError, urllib.error.URLError) as first:
+        reason = getattr(first, "reason", first)
+        if not isinstance(reason, ssl.SSLCertVerificationError):
+            raise
+        try:
+            import certifi  # installed alongside Streamlit
+
+            return _open(
+                url, timeout, ssl.create_default_context(cafile=certifi.where())
+            )
+        except (ImportError, ssl.SSLError, urllib.error.URLError) as second:
+            raise RuntimeError(
+                "The site's certificate could not be verified, even with an up-to-date certificate bundle. "
+                "If it also shows a certificate warning in your browser, the site's certificate has expired and "
+                "the fix is on their side: download the CSV from the page and upload it in the sidebar instead. "
+                f"(first error: {reason}; second error: {getattr(second, 'reason', second)})"
+            ) from second
 
 
 def extract_tables(html: str) -> tuple[list[Table], str]:
@@ -117,7 +147,12 @@ def _site_of(t: Table) -> str | None:
         if s in heads:
             return s
     cols = " ".join(t.headers).lower()
-    for s, key in (("draftkings", "dk id"), ("fanduel", "fd id"), ("yahoo", "yahoo id"), ("fanteam", "fanteam id")):
+    for s, key in (
+        ("draftkings", "dk id"),
+        ("fanduel", "fd id"),
+        ("yahoo", "yahoo id"),
+        ("fanteam", "fanteam id"),
+    ):
         if key in cols:
             return s
     return None
@@ -133,7 +168,8 @@ def find_projection_table(tables: list[Table], site: str = "fanteam") -> Table:
     if best is None:
         raise ValueError(
             f"Could not find the {site} projections table. Run `python scraper.py --debug` and send me the "
-            "list of tables, or save the page from your browser and use --html.")
+            "list of tables, or save the page from your browser and use --html."
+        )
     return best
 
 
@@ -156,6 +192,11 @@ def find_games_table(tables: list[Table]) -> Table | None:
     return None
 
 
+def _cell(row: list[str], idx: dict[str, int], key: str) -> float:
+    """Numeric value of a named column in a table row, NaN if the column or cell is missing."""
+    return _num(row[idx[key]]) if key in idx and idx[key] < len(row) else np.nan
+
+
 def games_to_frame(t: Table | None) -> pd.DataFrame:
     """away, home, total, away_implied, home_implied (implied is blank until the line is posted)."""
     cols = ["away", "home", "total", "away_implied", "home_implied"]
@@ -164,12 +205,22 @@ def games_to_frame(t: Table | None) -> pd.DataFrame:
     idx = {h.strip().lower(): i for i, h in enumerate(t.headers)}
     out = []
     for r in t.rows:
-        m = re.match(r"^\s*([A-Z]{2,3})\s*@\s*([A-Z]{2,3})\s*$", r[idx["game"]]) if "game" in idx else None
+        m = (
+            re.match(r"^\s*([A-Z]{2,3})\s*@\s*([A-Z]{2,3})\s*$", r[idx["game"]])
+            if "game" in idx
+            else None
+        )
         if not m:
             continue
-        get = lambda key: _num(r[idx[key]]) if key in idx and idx[key] < len(r) else np.nan  # noqa: E731
-        out.append({"away": m.group(1), "home": m.group(2), "total": get("total"),
-                    "away_implied": get("away implied"), "home_implied": get("home implied")})
+        out.append(
+            {
+                "away": m.group(1),
+                "home": m.group(2),
+                "total": _cell(r, idx, "total"),
+                "away_implied": _cell(r, idx, "away implied"),
+                "home_implied": _cell(r, idx, "home implied"),
+            }
+        )
     return pd.DataFrame(out, columns=cols)
 
 
@@ -185,7 +236,9 @@ def scrape(html: str | None = None, site: str = "fanteam") -> dict:
     tables, text = extract_tables(html)
     week, updated = find_week(text)
     return {
-        "week": week, "updated": updated, "tables": tables,
+        "week": week,
+        "updated": updated,
+        "tables": tables,
         "players": table_to_frame(find_projection_table(tables, site)),
         "games": games_to_frame(find_games_table(tables)),
     }
@@ -195,7 +248,10 @@ def save(result: dict, folder: str | Path = "data") -> tuple[Path, Path]:
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     wk = f"{result['week']:02d}" if result["week"] else "xx"
-    p_path, g_path = folder / f"nfl_fanteam_week{wk}.csv", folder / f"week{wk}_games.csv"
+    p_path, g_path = (
+        folder / f"nfl_fanteam_week{wk}.csv",
+        folder / f"week{wk}_games.csv",
+    )
     result["players"].to_csv(p_path, index=False)
     result["games"].to_csv(g_path, index=False)
     return p_path, g_path
@@ -204,18 +260,28 @@ def save(result: dict, folder: str | Path = "data") -> tuple[Path, Path]:
 def describe_tables(tables: list[Table]) -> str:
     lines = []
     for i, t in enumerate(tables):
-        lines.append(f"[{i}] rows={len(t.rows):4d} site={_site_of(t)} headings={t.headings[-2:]} columns={t.headers}")
+        lines.append(
+            f"[{i}] rows={len(t.rows):4d} site={_site_of(t)} headings={t.headings[-2:]} columns={t.headers}"
+        )
     return "\n".join(lines)
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Fetch NFL projections from Daily Fantasy Tips")
+    ap = argparse.ArgumentParser(
+        description="Fetch NFL projections from Daily Fantasy Tips"
+    )
     ap.add_argument("--url", default=URL)
     ap.add_argument("--html", help="parse a saved HTML file instead of fetching")
     ap.add_argument("--out", default="data", help="folder for the CSV files")
-    ap.add_argument("--debug", action="store_true", help="print every table found and exit")
+    ap.add_argument(
+        "--debug", action="store_true", help="print every table found and exit"
+    )
     args = ap.parse_args()
-    html = Path(args.html).read_text(encoding="utf-8", errors="replace") if args.html else fetch_html(args.url)
+    html = (
+        Path(args.html).read_text(encoding="utf-8", errors="replace")
+        if args.html
+        else fetch_html(args.url)
+    )
     if args.debug:
         tables, _ = extract_tables(html)
         print(describe_tables(tables))
