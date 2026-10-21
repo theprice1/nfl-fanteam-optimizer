@@ -26,7 +26,12 @@ def check_lineup(d, rules, L):
 
 def test_all():
     d, rules = prep()
-    assert abs(d.groupby("pos").own.sum() / 100 - pd.Series({"QB":1,"RB":2.4,"WR":3.45,"TE":1.15,"DST":1})).abs().max() < 1e-2
+    assert abs(d.groupby("pos").own.sum() / 100 - pd.Series({"QB":1,"RB":2.515,"WR":3.313,"TE":1.172,"DST":1})).abs().max() < 1e-2
+    hist = E.load_history(DATA / "history")
+    assert hist, "week06_training.csv should be in data/history"
+    err = E.evaluate_ownership(hist, E.OwnParams(), rules)
+    print("ownership vs Week 6 results:", {k: round(v, 3) for k, v in err.items()})
+    assert err["mae"] < 2.0 and err["corr"] > 0.88
     for mode in ["Cash", "GPP", "Contrarian", "Pure projection"]:
         cfg = E.default_cfg(mode)
         if cfg["use_sim"]:

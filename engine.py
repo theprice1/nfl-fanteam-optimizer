@@ -9,7 +9,6 @@ Sections
   5. Correlated simulation + field model (ranks lineups for GPP)
   6. Lineup helpers (slot ordering, metrics, export)
 """
-
 from __future__ import annotations
 
 import difflib
@@ -27,21 +26,11 @@ import pandas as pd
 # --------------------------------------------------------------------------
 POS_ORDER = ["QB", "RB", "WR", "TE", "DST"]
 FLEX_POS = ("RB", "WR", "TE")
-FLEX_SHARE = {
-    "RB": 0.40,
-    "WR": 0.45,
-    "TE": 0.15,
-}  # how the FLEX slot is shared in the field
+FLEX_SHARE = {"RB": 0.515, "WR": 0.313, "TE": 0.172}  # how the FLEX slot is shared (Week 6 results)
 
-SIGMA = {
-    "QB": 0.30,
-    "RB": 0.50,
-    "WR": 0.60,
-    "TE": 0.65,
-    "DST": 0.55,
-}  # log-normal spread
+SIGMA = {"QB": 0.31, "RB": 0.55, "WR": 0.65, "TE": 0.75, "DST": 0.70}  # log-normal spread (Week 6 residuals)
 DEFAULT_PLAY_PROB = {"expected": 0.98, "possible": 0.70, "unexpected": 0.25}
-OWN_CAP = {"QB": 0.34, "RB": 0.38, "WR": 0.36, "TE": 0.40, "DST": 0.26}
+OWN_CAP = {"QB": 0.28, "RB": 0.40, "WR": 0.45, "TE": 0.45, "DST": 0.22}
 
 
 @dataclass
@@ -49,11 +38,9 @@ class Rules:
     """Contest rules. Verify these against the Fanteam contest lobby each week."""
 
     budget: float = 110.0
-    slot_min: dict = field(
-        default_factory=lambda: {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "DST": 1}
-    )
+    slot_min: dict = field(default_factory=lambda: {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "DST": 1})
     flex: bool = True  # one extra RB / WR / TE
-    max_per_team: int = 4
+    max_per_team: int = 3
     dst_counts_for_team: bool = True
 
     @property
@@ -65,69 +52,34 @@ class Rules:
 
 
 COLMAP = {
-    "player": "name",
-    "name": "name",
-    "pos": "pos",
-    "position": "pos",
-    "team": "team",
-    "opp": "opp",
-    "opponent": "opp",
-    "salary": "salary",
-    "price": "salary",
-    "cost": "salary",
-    "proj": "proj",
-    "projection": "proj",
-    "value": "value",
-    "status": "status",
-    "form": "form",
-    "last": "last",
-    "total": "total",
-    "fanteam id": "fid",
-    "fanteam_id": "fid",
-    "id": "fid",
+    "player": "name", "name": "name", "pos": "pos", "position": "pos", "team": "team",
+    "opp": "opp", "opponent": "opp", "salary": "salary", "price": "salary", "cost": "salary",
+    "proj": "proj", "projection": "proj", "value": "value", "status": "status",
+    "form": "form", "last": "last", "total": "total",
+    "fanteam id": "fid", "fanteam_id": "fid", "id": "fid",
 }
 
 
 def load_players(df: pd.DataFrame) -> pd.DataFrame:
     """Normalise a projections CSV (Daily Fantasy Tips Fanteam export format)."""
     d = df.copy()
-    d.columns = [
-        COLMAP.get(str(c).strip().lower(), str(c).strip().lower()) for c in d.columns
-    ]
-    missing = [
-        c for c in ("name", "pos", "team", "salary", "proj") if c not in d.columns
-    ]
+    d.columns = [COLMAP.get(str(c).strip().lower(), str(c).strip().lower()) for c in d.columns]
+    missing = [c for c in ("name", "pos", "team", "salary", "proj") if c not in d.columns]
     if missing:
         raise ValueError(f"CSV is missing required column(s): {', '.join(missing)}")
-    for col, default in (
-        ("opp", ""),
-        ("status", "expected"),
-        ("form", np.nan),
-        ("last", np.nan),
-        ("total", np.nan),
-        ("fid", ""),
-    ):
+    for col, default in (("opp", ""), ("status", "expected"), ("form", np.nan),
+                         ("last", np.nan), ("total", np.nan), ("fid", "")):
         if col not in d.columns:
             d[col] = default
     d["name"] = d["name"].astype(str).str.strip()
-    d["pos"] = (
-        d["pos"]
-        .astype(str)
-        .str.upper()
-        .str.strip()
-        .replace({"DEF": "DST", "D/ST": "DST", "DS": "DST", "D": "DST"})
-    )
+    d["pos"] = (d["pos"].astype(str).str.upper().str.strip()
+                .replace({"DEF": "DST", "D/ST": "DST", "DS": "DST", "D": "DST"}))
     d["team"] = d["team"].astype(str).str.upper().str.strip()
     d["opp"] = d["opp"].astype(str).str.upper().str.strip().replace({"NAN": ""})
     for col in ("salary", "proj", "form", "last", "total"):
         d[col] = pd.to_numeric(d[col], errors="coerce")
-    d["status"] = (
-        d["status"]
-        .astype(str)
-        .str.lower()
-        .str.strip()
-        .replace({"nan": "expected", "": "expected"})
-    )
+    d["status"] = (d["status"].astype(str).str.lower().str.strip()
+                   .replace({"nan": "expected", "": "expected"}))
     d = d[d["pos"].isin(POS_ORDER)].dropna(subset=["salary", "proj"])
     d = d[(d["salary"] > 0) & (d["proj"] > 0)]
     d = d.drop_duplicates(["name", "pos", "team"]).reset_index(drop=True)
@@ -141,15 +93,11 @@ def load_games(df: pd.DataFrame) -> pd.DataFrame:
     d.columns = [str(c).strip().lower() for c in d.columns]
     for col in ("away", "home"):
         if col not in d.columns:
-            raise ValueError(
-                "Games CSV needs columns: away, home, total, away_implied, home_implied"
-            )
+            raise ValueError("Games CSV needs columns: away, home, total, away_implied, home_implied")
         d[col] = d[col].astype(str).str.upper().str.strip()
     for col in ("total", "away_implied", "home_implied"):
         d[col] = pd.to_numeric(d.get(col, np.nan), errors="coerce")
-    return d[["away", "home", "total", "away_implied", "home_implied"]].reset_index(
-        drop=True
-    )
+    return d[["away", "home", "total", "away_implied", "home_implied"]].reset_index(drop=True)
 
 
 def games_from_players(players: pd.DataFrame) -> pd.DataFrame:
@@ -159,18 +107,8 @@ def games_from_players(players: pd.DataFrame) -> pd.DataFrame:
         if not o or (o, t) in seen:
             continue
         seen.add((t, o))
-        rows.append(
-            {
-                "away": t,
-                "home": o,
-                "total": np.nan,
-                "away_implied": np.nan,
-                "home_implied": np.nan,
-            }
-        )
-    return pd.DataFrame(
-        rows, columns=["away", "home", "total", "away_implied", "home_implied"]
-    )
+        rows.append({"away": t, "home": o, "total": np.nan, "away_implied": np.nan, "home_implied": np.nan})
+    return pd.DataFrame(rows, columns=["away", "home", "total", "away_implied", "home_implied"])
 
 
 def implied_map(games: pd.DataFrame) -> dict:
@@ -186,12 +124,12 @@ def implied_map(games: pd.DataFrame) -> dict:
 # --------------------------------------------------------------------------
 # 2. Player model
 # --------------------------------------------------------------------------
-def add_features(
-    players: pd.DataFrame, implied: dict, play_prob: dict | None = None
-) -> pd.DataFrame:
+def add_features(players: pd.DataFrame, implied: dict, play_prob: dict | None = None) -> pd.DataFrame:
     """Adds availability, floor (20th pct), ceiling (90th pct) and team environment."""
     d = players.copy()
     pp = {**DEFAULT_PLAY_PROB, **(play_prob or {})}
+    if "proj_src" not in d.columns:
+        d["proj_src"] = "source"
     d["p_play"] = d["status"].map(pp).fillna(0.9)
     d["sigma"] = d["pos"].map(SIGMA)
     # Mean-preserving log-normal: E[x] = proj. Right-skewed, never negative.
@@ -207,16 +145,35 @@ def add_features(
 
 
 # --------------------------------------------------------------------------
-# 3. Ownership projection + calibration
+# 3. Ownership projection + calibration (fitted on real Fanteam results)
 # --------------------------------------------------------------------------
 @dataclass
 class OwnParams:
-    sharp: float = 0.75  # how concentrated the field is on the top plays
-    w_proj: float = 0.90  # weight on projection rank within position
-    w_value: float = 0.70  # weight on points-per-credit within position
-    w_team: float = 0.35  # weight on team implied total
-    pen_possible: float = 0.70
-    pen_unexpected: float = 2.00
+    """Multinomial-logit ownership model, fitted on Week 6 Fanteam results (190 players).
+
+    score = tau[pos] * sharp * (b_proj*z_proj + b_value*z_value + b_form*z_form
+                                + b_price*z_price + b_team*team_z) - penalties
+    Shares are a softmax of score within each position, scaled to that position's slot count.
+    """
+
+    sharp: float = 1.0        # global multiplier on every coefficient
+    b_proj: float = 0.49      # projection, z-scored within position
+    b_value: float = 0.48     # points per credit
+    b_form: float = 0.30      # recent Fanteam form (public chases hot players)
+    b_price: float = -0.24    # price (cheaper = more owned once value is controlled for)
+    b_team: float = 0.08      # team implied total
+    pen_possible: float = 0.07
+    pen_unexpected: float = 2.0
+    tau_qb: float = 0.85      # quarterbacks are spread out
+    tau_rb: float = 1.25      # running backs are concentrated
+    tau_wr: float = 1.00
+    tau_te: float = 1.00
+    tau_dst: float = 0.85
+
+
+FIT_FIELDS = ["b_proj", "b_value", "b_form", "b_price", "b_team", "pen_possible",
+              "tau_qb", "tau_rb", "tau_wr", "tau_te", "tau_dst"]
+FEATURES = ["proj", "value", "form", "price", "team_z"]
 
 
 def _allocate(w: np.ndarray, total: float, cap: float) -> np.ndarray:
@@ -241,38 +198,42 @@ def _allocate(w: np.ndarray, total: float, cap: float) -> np.ndarray:
     return own
 
 
-def _zscore(g: pd.DataFrame, base: pd.DataFrame, col: str) -> pd.Series:
-    """z-score of g[col] against the reference group `base`, clipped to [-2.5, 3]."""
-    mu = base[col].mean()
-    sd = base[col].std(ddof=0)
-    sd = 1.0 if (not np.isfinite(sd) or sd < 1e-9) else sd
-    return ((g[col] - mu) / sd).clip(-2.5, 3.0)
+def design_matrix(d: pd.DataFrame) -> pd.DataFrame:
+    """z-scored features within each position (reference group = players with a real projection)."""
+    X = pd.DataFrame(0.0, index=d.index, columns=FEATURES)
+    form = d["form"] if "form" in d.columns else pd.Series(np.nan, index=d.index)
+    for pos, g in d.groupby("pos"):
+        cols = {
+            "proj": g["proj"], "value": g["proj"] / g["salary"], "price": g["salary"],
+            "form": form[g.index].fillna(form[g.index].median() if form[g.index].notna().any() else 0.0),
+        }
+        base_idx = g.index[g["proj"] >= 0.25 * g["proj"].max()]
+        for name, s in cols.items():
+            mu, sd = s[base_idx].mean(), s[base_idx].std(ddof=0)
+            sd = 1.0 if (not np.isfinite(sd) or sd < 1e-9) else sd
+            X.loc[g.index, name] = ((s - mu) / sd).clip(-2.5, 3.0)
+        X.loc[g.index, "team_z"] = g["team_z"] if "team_z" in g.columns else 0.0
+    return X
+
+
+def _scores(d: pd.DataFrame, params: OwnParams) -> pd.Series:
+    X = design_matrix(d)
+    lin = (params.b_proj * X["proj"] + params.b_value * X["value"] + params.b_form * X["form"]
+           + params.b_price * X["price"] + params.b_team * X["team_z"]) * params.sharp
+    pen = d["status"].map({"possible": params.pen_possible, "unexpected": params.pen_unexpected}).fillna(0.0)
+    tau = d["pos"].map({"QB": params.tau_qb, "RB": params.tau_rb, "WR": params.tau_wr,
+                        "TE": params.tau_te, "DST": params.tau_dst})
+    return lin * tau - pen
 
 
 def project_ownership(d: pd.DataFrame, params: OwnParams, rules: Rules) -> pd.Series:
     """Projected ownership in percent, summing to (slots at each position) x 100."""
-    score = pd.Series(0.0, index=d.index)
-    for pos, g in d.groupby("pos"):
-        base = g[g["proj"] >= 0.25 * g["proj"].max()]
-
-        pen = (
-            g["status"]
-            .map({"possible": params.pen_possible, "unexpected": params.pen_unexpected})
-            .fillna(0.0)
-        )
-        score[g.index] = (
-            params.w_proj * _zscore(g, base, "proj")
-            + params.w_value * _zscore(g, base, "value")
-            + params.w_team * g["team_z"]
-            - pen
-        )
-    w = np.exp(params.sharp * score.clip(upper=6))
+    score = _scores(d, params).clip(upper=8)
     own = pd.Series(0.0, index=d.index)
     for pos, g in d.groupby("pos"):
-        total = rules.slot_min[pos] + (
-            FLEX_SHARE[pos] if (rules.flex and pos in FLEX_SHARE) else 0.0
-        )
-        own[g.index] = _allocate(w[g.index].to_numpy(), total, OWN_CAP[pos]) * 100.0
+        total = rules.slot_min[pos] + (FLEX_SHARE[pos] if (rules.flex and pos in FLEX_SHARE) else 0.0)
+        w = np.exp(score[g.index] - score[g.index].max())
+        own[g.index] = _allocate(w.to_numpy(), total, OWN_CAP[pos]) * 100.0
     return own.round(2)
 
 
@@ -289,9 +250,7 @@ def parse_ownership_text(text: str) -> list[tuple[str, float]]:
         line = line.strip()
         if not line:
             continue
-        m = re.match(r"^(.*?)[,\t;|]+\s*([\d.]+)\s*%?\s*$", line) or re.match(
-            r"^(.*?)\s+([\d.]+)\s*%?\s*$", line
-        )
+        m = re.match(r"^(.*?)[,\t;|]+\s*([\d.]+)\s*%?\s*$", line) or re.match(r"^(.*?)\s+([\d.]+)\s*%?\s*$", line)
         if not m:
             continue
         try:
@@ -301,10 +260,49 @@ def parse_ownership_text(text: str) -> list[tuple[str, float]]:
     return rows
 
 
-def match_ownership(
-    rows: Sequence[tuple[str, float]], d: pd.DataFrame, cutoff: float = 0.84
-):
-    """Fuzzy-match pasted names to the slate. Returns (matched DataFrame, unmatched names)."""
+_FT_ROW = re.compile(
+    r"^\s*(?P<name>.+?)\s+(?P<pos>QB|RB|WR|TE|DST)\s+(?P<team>[A-Z]{2,3})\s+(?P<price>\d+(?:\.\d+)?)\s*M\s*"
+    r"(?:(?P<own>\d+(?:\.\d+)?)\s*%|N/?A)?\s*(?:(?P<form>-?\d+(?:\.\d+)?)|N/?A)?\s*(?P<score>-?\d+(?:\.\d+)?)?\s*$",
+    re.IGNORECASE)
+
+
+def parse_fanteam_table(text: str) -> pd.DataFrame:
+    """Parse text copied from the Fanteam player table (Player, Pos, Team, Price, Own %, Form, Score).
+
+    Works before lock (no ownership or score yet) and after lock. Blank / N/A values become NaN.
+    """
+    rows = []
+    for line in text.replace("\t", "  ").splitlines():
+        m = _FT_ROW.match(line)
+        if not m:
+            continue
+        g = m.groupdict()
+        pos = g["pos"].upper()
+        rows.append({
+            "name": g["name"].strip(), "pos": pos, "team": g["team"].upper(), "price": float(g["price"]),
+            "own_pct": float(g["own"]) if g["own"] else np.nan,
+            "form": float(g["form"]) if g["form"] else np.nan,
+            "score": float(g["score"]) if g["score"] else np.nan,
+        })
+    return pd.DataFrame(rows, columns=["name", "pos", "team", "price", "own_pct", "form", "score"])
+
+
+def _match_row(d: pd.DataFrame, name: str, pos: str, team: str, cutoff: float = 0.7):
+    cand = d[(d["pos"] == pos) & (d["team"] == team)]
+    if cand.empty:
+        return None
+    if pos == "DST":
+        return cand.index[0]
+    keys = {_norm_name(n): i for i, n in zip(cand.index, cand["name"])}
+    k = _norm_name(name)
+    if k in keys:
+        return keys[k]
+    close = difflib.get_close_matches(k, list(keys), n=1, cutoff=cutoff)
+    return keys[close[0]] if close else None
+
+
+def match_ownership(rows: Sequence[tuple[str, float]], d: pd.DataFrame, cutoff: float = 0.84):
+    """Fuzzy-match pasted (name, %) pairs to the slate. Returns (matched DataFrame, unmatched names)."""
     keys = {_norm_name(n): n for n in d["name"]}
     matched, unmatched = [], []
     for raw, pct in rows:
@@ -317,48 +315,138 @@ def match_ownership(
             unmatched.append(raw)
         else:
             matched.append({"name": hit, "actual": pct})
-    out = pd.DataFrame(matched, columns=["name", "actual"]).drop_duplicates(
-        "name", keep="last"
-    )
+    out = pd.DataFrame(matched, columns=["name", "actual"]).drop_duplicates("name", keep="last")
     return out, unmatched
+
+
+def fallback_projection_model(d: pd.DataFrame):
+    """Least-squares proj ~ price + form for players the source has no projection for."""
+    ok = d[d["form"].notna()] if "form" in d.columns else d
+    med = float(ok["form"].median()) if len(ok) else 0.0
+    X = np.c_[np.ones(len(ok)), ok["salary"], ok["form"].fillna(med)]
+    beta = np.linalg.lstsq(X, ok["proj"], rcond=None)[0]
+
+    def predict(price, form):
+        f = pd.Series(form).fillna(med).to_numpy()
+        return np.clip(beta[0] + beta[1] * np.asarray(price, float) + beta[2] * f, 1.0, None)
+
+    return predict
+
+
+def add_unprojected(d: pd.DataFrame, price_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
+    """Add players that appear in a pasted Fanteam list but not in the projections file.
+
+    Their projection is estimated from price and form, status 'expected', flagged proj_src='fallback'.
+    """
+    d = d.copy()
+    if "proj_src" not in d.columns:
+        d["proj_src"] = "source"
+    predict = fallback_projection_model(d)
+    opp_of = d.drop_duplicates("team").set_index("team")["opp"].to_dict()
+    rows, added = [], []
+    for r in price_df.itertuples(index=False):
+        if _match_row(d, r.name, r.pos, r.team) is not None:
+            continue
+        proj = float(predict([r.price], [r.form])[0])
+        if r.pos == "DST":
+            continue
+        rows.append({"name": r.name, "pos": r.pos, "team": r.team, "opp": opp_of.get(r.team, ""), "salary": r.price,
+                     "proj": proj, "status": "expected", "form": r.form, "last": np.nan, "total": np.nan,
+                     "fid": "", "value": proj / r.price, "proj_src": "fallback"})
+        added.append(r.name)
+    if rows:
+        d = pd.concat([d, pd.DataFrame(rows)], ignore_index=True)
+    return d, added
+
+
+def build_training_frame(d: pd.DataFrame, results: pd.DataFrame) -> pd.DataFrame:
+    """One row per player in a results table (Fanteam post-lock ownership + score), joined to projections.
+
+    Players missing from the projections get a price/form-based projection. Players who did not
+    play are not in the results table, so they are left out here rather than counted as 0%.
+    """
+    predict = fallback_projection_model(d)
+    team_z = d.drop_duplicates("team").set_index("team")["team_z"].to_dict() if "team_z" in d.columns else {}
+    rows = []
+    for r in results.itertuples(index=False):
+        hit = _match_row(d, r.name, r.pos, r.team)
+        if hit is not None:
+            proj, status, src = float(d.at[hit, "proj"]), d.at[hit, "status"], "source"
+        else:
+            proj, status, src = float(predict([r.price], [r.form])[0]), "expected", "fallback"
+        rows.append({"name": r.name, "pos": r.pos, "team": r.team, "salary": r.price, "proj": proj,
+                     "form": r.form, "status": status, "team_z": team_z.get(r.team, 0.0),
+                     "actual": 0.0 if pd.isna(r.own_pct) else r.own_pct, "score": r.score, "proj_src": src})
+    return pd.DataFrame(rows)
+
+
+def load_history(folder) -> list[pd.DataFrame]:
+    """Training files saved from earlier weeks (data/history/*_training.csv)."""
+    from pathlib import Path
+
+    frames = []
+    for f in sorted(Path(folder).glob("*_training.csv")):
+        t = pd.read_csv(f)
+        if {"pos", "salary", "proj", "actual"} <= set(t.columns):
+            t["week_file"] = f.stem
+            frames.append(t)
+    return frames
 
 
 def ownership_error(pred: pd.Series, actual: pd.Series) -> dict:
     err = pred - actual
-    corr = (
-        float(np.corrcoef(pred, actual)[0, 1])
-        if len(pred) > 2 and pred.std() > 0 and actual.std() > 0
-        else float("nan")
-    )
-    return {
-        "n": len(pred),
-        "mae": float(err.abs().mean()),
-        "bias": float(err.mean()),
-        "corr": corr,
-    }
+    corr = float(np.corrcoef(pred, actual)[0, 1]) if len(pred) > 2 and pred.std() > 0 and actual.std() > 0 else float("nan")
+    return {"n": len(pred), "mae": float(err.abs().mean()), "bias": float(err.mean()), "corr": corr}
 
 
-def fit_ownership_params(
-    d: pd.DataFrame, rules: Rules, actual: dict, start: OwnParams
-) -> tuple[OwnParams, dict, dict]:
-    """Small grid search for the parameters that best reproduce pasted post-lock ownership."""
-    names = d["name"]
-    mask = names.isin(actual.keys())
-    act = names[mask].map(actual)
-    before = ownership_error(project_ownership(d, start, rules)[mask], act)
-    best, best_err = start, before["mae"]
-    for sharp, wv, wt, wp in itertools.product(
-        [0.7, 0.9, 1.1, 1.3, 1.6, 2.0],
-        [0.2, 0.5, 0.8, 1.1],
-        [0.0, 0.3, 0.6],
-        [0.5, 0.9, 1.3],
-    ):
-        p = replace(start, sharp=sharp, w_value=wv, w_team=wt, w_proj=wp)
-        e = ownership_error(project_ownership(d, p, rules)[mask], act)["mae"]
-        if e < best_err - 1e-9:
-            best, best_err = p, e
-    after = ownership_error(project_ownership(d, best, rules)[mask], act)
-    return best, before, after
+def evaluate_ownership(frames: Sequence[pd.DataFrame], params: OwnParams, rules: Rules) -> dict:
+    pred = pd.concat([project_ownership(f, params, rules) for f in frames], ignore_index=True)
+    act = pd.concat([f["actual"] for f in frames], ignore_index=True)
+    return ownership_error(pred, act)
+
+
+def fit_ownership(frames: Sequence[pd.DataFrame], rules: Rules, prior: OwnParams | None = None,
+                  prior_weight: float = 0.02) -> tuple[OwnParams, dict, dict]:
+    """Fit ownership coefficients on one or more weeks of real results.
+
+    Maximises the multinomial-logit likelihood of each position's ownership shares, with a pull
+    toward `prior` (prior_weight / number of weeks) so a single odd week cannot swing the model.
+    Returns (fitted params, error before, error after).
+    """
+    from scipy.optimize import minimize
+
+    prior = prior or OwnParams()
+    theta0 = np.array([getattr(prior, k) for k in FIT_FIELDS], float)
+    prepared = []
+    for f in frames:
+        f = f.reset_index(drop=True)
+        X = design_matrix(f)
+        prepared.append((f, X, (f["status"] == "possible").astype(float).to_numpy()))
+    total_own = sum(float(f["actual"].sum()) for f in frames) or 1.0
+    lam = prior_weight / max(len(frames), 1)
+
+    def nll(theta: np.ndarray) -> float:
+        b = dict(zip(FIT_FIELDS, theta))
+        loss = 0.0
+        for f, X, poss in prepared:
+            lin = (b["b_proj"] * X["proj"] + b["b_value"] * X["value"] + b["b_form"] * X["form"]
+                   + b["b_price"] * X["price"] + b["b_team"] * X["team_z"]).to_numpy()
+            tau = f["pos"].map({"QB": b["tau_qb"], "RB": b["tau_rb"], "WR": b["tau_wr"],
+                                "TE": b["tau_te"], "DST": b["tau_dst"]}).to_numpy()
+            s = lin * tau - b["pen_possible"] * poss
+            for pos in POS_ORDER:
+                idx = np.where(f["pos"].to_numpy() == pos)[0]
+                if len(idx) == 0:
+                    continue
+                sc = s[idx]
+                lse = np.log(np.exp(sc - sc.max()).sum()) + sc.max()
+                loss -= float(np.sum(f["actual"].to_numpy()[idx] * (sc - lse)))
+        return loss / total_own + lam * float(np.sum((theta - theta0) ** 2))
+
+    res = minimize(nll, theta0, method="L-BFGS-B",
+                   bounds=[(-0.5, 2.0)] * 3 + [(-1.5, 0.5)] + [(-0.5, 1.0)] + [(-0.5, 1.5)] + [(0.3, 2.5)] * 5)
+    fitted = replace(prior, **dict(zip(FIT_FIELDS, [float(x) for x in res.x])))
+    return fitted, evaluate_ownership(frames, prior, rules), evaluate_ownership(frames, fitted, rules)
 
 
 # --------------------------------------------------------------------------
@@ -395,12 +483,8 @@ def _solve_scipy(obj: np.ndarray, cons: list, n: int) -> list[int] | None:
             lb[r] = lo
         if hi is not None:
             ub[r] = hi
-    res = milp(
-        c=-np.asarray(obj, float),
-        constraints=LinearConstraint(A, lb, ub),
-        integrality=np.ones(n),
-        bounds=Bounds(0, 1),
-    )
+    res = milp(c=-np.asarray(obj, float), constraints=LinearConstraint(A, lb, ub),
+               integrality=np.ones(n), bounds=Bounds(0, 1))
     if not res.success or res.x is None:
         return None
     return [i for i in range(n) if res.x[i] > 0.5]
@@ -427,25 +511,12 @@ def _solve_binary(obj: np.ndarray, cons: list, n: int) -> list[int] | None:
 class LineupOptimizer:
     """Holds the structural constraints for one build; re-solved with different objectives."""
 
-    def __init__(
-        self,
-        pool: pd.DataFrame,
-        rules: Rules,
-        *,
-        locks: Iterable[str] = (),
-        qb_allowed: Iterable[str] | None = None,
-        stack_min: int = 0,
-        stack_rb: bool = False,
-        bring_back: int = 0,
-        bring_back_rb: bool = True,
-        dst_vs_offense: bool = True,
-        max_leftover: float | None = None,
-        own_sum_cap: float | None = None,
-        max_chalk: int | None = None,
-        chalk_thr: float = 25.0,
-        low_min: int = 0,
-        low_thr: float = 10.0,
-    ):
+    def __init__(self, pool: pd.DataFrame, rules: Rules, *, locks: Iterable[str] = (),
+                 qb_allowed: Iterable[str] | None = None, stack_min: int = 0, stack_rb: bool = False,
+                 bring_back: int = 0, bring_back_rb: bool = True, dst_vs_offense: bool = True,
+                 max_leftover: float | None = None, own_sum_cap: float | None = None,
+                 max_chalk: int | None = None, chalk_thr: float = 25.0,
+                 low_min: int = 0, low_thr: float = 10.0):
         self.pool = pool.reset_index(drop=True)
         self.rules = rules
         self.n = len(self.pool)
@@ -457,19 +528,11 @@ class LineupOptimizer:
         add(({i: 1 for i in range(self.n)}, rules.roster_size, rules.roster_size))
         add(({i: float(p.salary[i]) for i in range(self.n)}, None, rules.budget))
         if max_leftover is not None:
-            add(
-                (
-                    {i: float(p.salary[i]) for i in range(self.n)},
-                    rules.budget - max_leftover,
-                    None,
-                )
-            )
+            add(({i: float(p.salary[i]) for i in range(self.n)}, rules.budget - max_leftover, None))
         for pos in POS_ORDER:
             add(({i: 1 for i in ids[pos]}, rules.slot_min[pos], rules.slot_max(pos)))
         for team, g in p.groupby("team"):
-            members = [
-                i for i in g.index if rules.dst_counts_for_team or p.pos[i] != "DST"
-            ]
+            members = [i for i in g.index if rules.dst_counts_for_team or p.pos[i] != "DST"]
             if len(members) > rules.max_per_team:
                 add(({i: 1 for i in members}, None, rules.max_per_team))
 
@@ -486,18 +549,12 @@ class LineupOptimizer:
         for q in ids["QB"]:
             team, opp = p.team[q], p.opp[q]
             if stack_min > 0:
-                mates = [
-                    i
-                    for i in range(self.n)
-                    if p.team[i] == team and p.pos[i] in stack_pos
-                ]
+                mates = [i for i in range(self.n) if p.team[i] == team and p.pos[i] in stack_pos]
                 coefs = {i: 1 for i in mates}
                 coefs[q] = -stack_min
                 add((coefs, 0, None))
             if bring_back > 0 and opp:
-                foes = [
-                    i for i in range(self.n) if p.team[i] == opp and p.pos[i] in bb_pos
-                ]
+                foes = [i for i in range(self.n) if p.team[i] == opp and p.pos[i] in bb_pos]
                 coefs = {i: 1 for i in foes}
                 coefs[q] = -bring_back
                 add((coefs, 0, None))
@@ -518,18 +575,8 @@ class LineupOptimizer:
     def solve(self, obj: np.ndarray, extra: Sequence = ()) -> list[int] | None:
         return _solve_binary(np.asarray(obj, float), self.cons + list(extra), self.n)
 
-    def generate(
-        self,
-        obj: np.ndarray,
-        n_lineups: int,
-        *,
-        rand: float = 0.0,
-        min_unique: int = 1,
-        max_exposure: float = 1.0,
-        seed: int = 0,
-        extra: Sequence = (),
-        progress=None,
-    ) -> list[list[int]]:
+    def generate(self, obj: np.ndarray, n_lineups: int, *, rand: float = 0.0, min_unique: int = 1,
+                 max_exposure: float = 1.0, seed: int = 0, extra: Sequence = (), progress=None) -> list[list[int]]:
         rng = np.random.default_rng(seed)
         out: list[list[int]] = []
         counts = np.zeros(self.n)
@@ -540,10 +587,7 @@ class LineupOptimizer:
             o = obj * (1 + rng.uniform(-rand, rand, self.n)) if rand > 0 else obj
             ex = list(extra)
             ex += [({i: 1}, None, 0) for i in np.where(counts >= cap)[0]]
-            ex += [
-                ({i: 1 for i in L}, None, self.rules.roster_size - min_unique)
-                for L in out
-            ]
+            ex += [({i: 1 for i in L}, None, self.rules.roster_size - min_unique) for L in out]
             sol = self.solve(o, ex)
             if sol is None:
                 break
@@ -565,9 +609,7 @@ LOADINGS = {
 }
 
 
-def simulate_scores(
-    pool: pd.DataFrame, n_sims: int = 2000, seed: int = 7
-) -> np.ndarray:
+def simulate_scores(pool: pd.DataFrame, n_sims: int = 2000, seed: int = 7) -> np.ndarray:
     """(players x sims) correlated fantasy scores: shared team passing/rushing and game environments."""
     rng = np.random.default_rng(seed)
     teams = sorted(set(pool.team) | (set(pool.opp) - {""}))
@@ -583,31 +625,18 @@ def simulate_scores(
     ti = np.array([t_idx[t] for t in pool.team])
     oi = np.array([t_idx.get(o, t_idx[t]) for t, o in zip(pool.team, pool.opp)])
     gi = np.array([games[frozenset((t, o))] for t, o in zip(pool.team, pool.opp)])
-    shared = (
-        L[:, 0:1] * pass_f[ti]
-        + L[:, 1:2] * rush_f[ti]
-        + L[:, 2:3] * game_f[gi]
-        + L[:, 3:4] * pass_f[oi]
-        + L[:, 4:5] * rush_f[oi]
-    )
-    noise_sd = np.sqrt(np.clip(1 - (L**2).sum(1), 0.25, None))[:, None]
-    z = (shared + noise_sd * rng.standard_normal((n, n_sims))) / np.sqrt(
-        (L**2).sum(1)[:, None] + noise_sd**2
-    )
+    shared = (L[:, 0:1] * pass_f[ti] + L[:, 1:2] * rush_f[ti] + L[:, 2:3] * game_f[gi]
+              + L[:, 3:4] * pass_f[oi] + L[:, 4:5] * rush_f[oi])
+    noise_sd = np.sqrt(np.clip(1 - (L ** 2).sum(1), 0.25, None))[:, None]
+    z = (shared + noise_sd * rng.standard_normal((n, n_sims))) / np.sqrt((L ** 2).sum(1)[:, None] + noise_sd ** 2)
     sig = pool.sigma.to_numpy()[:, None]
-    x = pool.proj.to_numpy()[:, None] * np.exp(sig * z - sig**2 / 2)
+    x = pool.proj.to_numpy()[:, None] * np.exp(sig * z - sig ** 2 / 2)
     plays = rng.random((n, n_sims)) < pool.p_play.to_numpy()[:, None]
     return x * plays
 
 
-def sample_field(
-    pool: pd.DataFrame,
-    own_pct: np.ndarray,
-    rules: Rules,
-    n_field: int = 1500,
-    seed: int = 11,
-    min_spend_frac: float = 0.92,
-) -> list[list[int]]:
+def sample_field(pool: pd.DataFrame, own_pct: np.ndarray, rules: Rules, n_field: int = 1500,
+                 seed: int = 11, min_spend_frac: float = 0.92) -> list[list[int]]:
     """Ownership-weighted random lineups that respect budget and team limits (a stand-in for the field).
 
     Vectorised: weighted sampling without replacement via Gumbel top-k, in batches.
@@ -662,9 +691,7 @@ def _indicator(lineups: Sequence[Sequence[int]], n: int) -> np.ndarray:
     return A
 
 
-def evaluate_lineups(
-    lineups: Sequence[Sequence[int]], X: np.ndarray, field: Sequence[Sequence[int]]
-) -> pd.DataFrame:
+def evaluate_lineups(lineups: Sequence[Sequence[int]], X: np.ndarray, field: Sequence[Sequence[int]]) -> pd.DataFrame:
     """Win-probability style metrics versus the simulated field, simulation by simulation."""
     n = X.shape[0]
     S = _indicator(lineups, n) @ X
@@ -673,26 +700,17 @@ def evaluate_lineups(
     else:
         F = _indicator(field, n) @ X
     t55, t90, t99 = (np.percentile(F, q, axis=0) for q in (55, 90, 99))
-    return pd.DataFrame(
-        {
-            "p_cash": (S >= t55).mean(1),  # beats ~55% of field (double-up style)
-            "p_top10": (S >= t90).mean(1),
-            "p_top1": (S >= t99).mean(1),
-            "sim_mean": S.mean(1),
-            "sim_p90": np.percentile(S, 90, axis=1),
-        }
-    )
+    return pd.DataFrame({
+        "p_cash": (S >= t55).mean(1),   # beats ~55% of field (double-up style)
+        "p_top10": (S >= t90).mean(1),
+        "p_top1": (S >= t99).mean(1),
+        "sim_mean": S.mean(1),
+        "sim_p90": np.percentile(S, 90, axis=1),
+    })
 
 
-def select_from_pool(
-    pool_lineups: list[list[int]],
-    metric: np.ndarray,
-    n: int,
-    min_unique: int,
-    max_exposure: float,
-    roster_size: int,
-    n_players: int,
-) -> list[list[int]]:
+def select_from_pool(pool_lineups: list[list[int]], metric: np.ndarray, n: int, min_unique: int,
+                     max_exposure: float, roster_size: int, n_players: int) -> list[list[int]]:
     order = np.argsort(-metric)
     cap = max(1, math.ceil(max_exposure * n))
     counts = np.zeros(n_players)
@@ -715,67 +733,20 @@ def select_from_pool(
 # --------------------------------------------------------------------------
 def default_cfg(mode: str) -> dict:
     base = {
-        "mode": mode,
-        "n": 5,
-        "min_unique": 2,
-        "max_exposure": 1.0,
-        "rand": 0.0,
-        "floor_w": 0.0,
-        "upside_w": 0.0,
-        "lev": 0.0,
-        "stack_min": 0,
-        "stack_rb": False,
-        "bring_back": 0,
-        "dst_vs_offense": True,
-        "pct_opt": 0.0,
-        "use_sim": False,
-        "pool_size": 60,
-        "uniq_w": 0.0,
-        "max_chalk": None,
-        "chalk_thr": 25.0,
-        "low_min": 0,
-        "low_thr": 10.0,
-        "own_cap_pct": None,
-        "max_leftover": None,
-        "locks": [],
-        "qb_allowed": [],
-        "n_sims": 2000,
-        "n_field": 1500,
-        "seed": 1,
+        "mode": mode, "n": 5, "min_unique": 2, "max_exposure": 1.0, "rand": 0.0, "floor_w": 0.0, "upside_w": 0.0,
+        "lev": 0.0, "stack_min": 0, "stack_rb": False, "bring_back": 0, "dst_vs_offense": True, "pct_opt": 0.0,
+        "use_sim": False, "pool_size": 60, "uniq_w": 0.0, "max_chalk": None, "chalk_thr": 25.0, "low_min": 0,
+        "low_thr": 10.0, "own_cap_pct": None, "max_leftover": None, "locks": [], "qb_allowed": [],
+        "n_sims": 2000, "n_field": 1500, "seed": 1,
     }
     presets = {
         "Cash": {"n": 3, "rand": 0.03, "floor_w": 0.5, "min_unique": 2},
-        "GPP": {
-            "n": 20,
-            "rand": 0.12,
-            "upside_w": 0.7,
-            "lev": 0.35,
-            "stack_min": 1,
-            "bring_back": 1,
-            "pct_opt": 0.93,
-            "use_sim": True,
-            "max_exposure": 0.6,
-            "min_unique": 2,
-        },
-        "Contrarian": {
-            "n": 20,
-            "rand": 0.18,
-            "upside_w": 0.8,
-            "lev": 0.5,
-            "stack_min": 1,
-            "bring_back": 1,
-            "pct_opt": 0.95,
-            "use_sim": True,
-            "uniq_w": 0.5,
-            "max_exposure": 0.4,
-            "min_unique": 3,
-            "max_chalk": 2,
-            "chalk_thr": 22.0,
-            "low_min": 2,
-            "low_thr": 8.0,
-            "own_cap_pct": 85.0,
-            "pool_size": 60,
-        },
+        "GPP": {"n": 20, "rand": 0.12, "upside_w": 0.7, "lev": 0.35, "stack_min": 1, "bring_back": 1,
+                "pct_opt": 0.93, "use_sim": True, "max_exposure": 0.6, "min_unique": 2},
+        "Contrarian": {"n": 20, "rand": 0.18, "upside_w": 0.8, "lev": 0.5, "stack_min": 1, "bring_back": 1,
+                       "pct_opt": 0.95, "use_sim": True, "uniq_w": 0.5, "max_exposure": 0.4, "min_unique": 3,
+                       "max_chalk": 2, "chalk_thr": 22.0, "low_min": 2, "low_thr": 8.0, "own_cap_pct": 85.0,
+                       "pool_size": 60},
         "Pure projection": {"n": 3, "min_unique": 1},
     }
     base.update(presets[mode])
@@ -784,91 +755,49 @@ def default_cfg(mode: str) -> dict:
 
 def objective_vector(pool: pd.DataFrame, cfg: dict) -> np.ndarray:
     p = pool.p_play.to_numpy()
-    proj, floor, ceil = (
-        pool.proj.to_numpy(),
-        pool.floor.to_numpy(),
-        pool.ceil.to_numpy(),
-    )
+    proj, floor, ceil = pool.proj.to_numpy(), pool.floor.to_numpy(), pool.ceil.to_numpy()
     own = pool.own.to_numpy() / 100.0
     mode = cfg["mode"]
     if mode == "Cash":
         return ((1 - cfg["floor_w"]) * proj + cfg["floor_w"] * floor) * p
     if mode == "Pure projection":
         return proj * p
-    return (
-        ((1 - cfg["upside_w"]) * proj + cfg["upside_w"] * ceil)
-        * p
-        * (1 - cfg["lev"] * own)
-    )
+    return ((1 - cfg["upside_w"]) * proj + cfg["upside_w"] * ceil) * p * (1 - cfg["lev"] * own)
 
 
-def build_lineups(
-    pool: pd.DataFrame,
-    rules: Rules,
-    cfg: dict,
-    field_baseline: float | None = None,
-    progress=None,
-) -> dict:
+def build_lineups(pool: pd.DataFrame, rules: Rules, cfg: dict, field_baseline: float | None = None,
+                  progress=None) -> dict:
     """pool must contain: name,pos,team,opp,salary,proj,floor,ceil,p_play,sigma,own (percent)."""
     pool = pool.reset_index(drop=True)
     notes: list[str] = []
-    field_l = sample_field(
-        pool, pool.own.to_numpy(), rules, cfg["n_field"], seed=cfg["seed"] + 200
-    )
-    if (
-        len(field_l) >= 50
-    ):  # typical own-sum of a field lineup, measured from the simulated field
+    field_l = sample_field(pool, pool.own.to_numpy(), rules, cfg["n_field"], seed=cfg["seed"] + 200)
+    if len(field_l) >= 50:  # typical own-sum of a field lineup, measured from the simulated field
         field_baseline = float(np.mean([pool.own.to_numpy()[L].sum() for L in field_l]))
     elif field_baseline is None:
         field_baseline = float((pool.own / 100 * pool.own).sum())
-    own_cap = (
-        field_baseline * cfg["own_cap_pct"] / 100.0 if cfg.get("own_cap_pct") else None
-    )
+    own_cap = field_baseline * cfg["own_cap_pct"] / 100.0 if cfg.get("own_cap_pct") else None
     opt = LineupOptimizer(
-        pool,
-        rules,
-        locks=cfg["locks"],
-        qb_allowed=cfg["qb_allowed"],
-        stack_min=cfg["stack_min"],
-        stack_rb=cfg["stack_rb"],
-        bring_back=cfg["bring_back"],
-        dst_vs_offense=cfg["dst_vs_offense"],
-        max_leftover=cfg["max_leftover"],
-        own_sum_cap=own_cap,
-        max_chalk=cfg["max_chalk"],
-        chalk_thr=cfg["chalk_thr"],
-        low_min=cfg["low_min"],
-        low_thr=cfg["low_thr"],
-    )
+        pool, rules, locks=cfg["locks"], qb_allowed=cfg["qb_allowed"], stack_min=cfg["stack_min"],
+        stack_rb=cfg["stack_rb"], bring_back=cfg["bring_back"], dst_vs_offense=cfg["dst_vs_offense"],
+        max_leftover=cfg["max_leftover"], own_sum_cap=own_cap, max_chalk=cfg["max_chalk"],
+        chalk_thr=cfg["chalk_thr"], low_min=cfg["low_min"], low_thr=cfg["low_thr"])
     proj_adj = pool.proj.to_numpy() * pool.p_play.to_numpy()
     best = opt.solve(proj_adj)
     if best is None:
-        raise ValueError(
-            "No valid lineup exists with these settings. Loosen locks, stacks, ownership limits or "
-            "the team cap."
-        )
+        raise ValueError("No valid lineup exists with these settings. Loosen locks, stacks, ownership limits or "
+                         "the team cap.")
     extra = []
     if cfg["pct_opt"] > 0:
         floor_val = cfg["pct_opt"] * float(proj_adj[best].sum())
-        extra.append(
-            ({i: float(proj_adj[i]) for i in range(len(pool))}, floor_val, None)
-        )
+        extra.append(({i: float(proj_adj[i]) for i in range(len(pool))}, floor_val, None))
 
     obj = objective_vector(pool, cfg)
     n = int(cfg["n"])
     M = max(n, int(cfg["pool_size"])) if cfg["use_sim"] else n
-    cand = opt.generate(
-        obj,
-        M,
-        rand=cfg["rand"],
-        min_unique=1 if cfg["use_sim"] else cfg["min_unique"],
-        max_exposure=min(1.0, cfg["max_exposure"] + 0.15)
-        if cfg["use_sim"]
-        else cfg["max_exposure"],
-        seed=cfg["seed"],
-        extra=extra,
-        progress=progress,
-    )
+    cand = opt.generate(obj, M, rand=cfg["rand"], min_unique=1 if cfg["use_sim"] else cfg["min_unique"],
+                        max_exposure=min(1.0, cfg["max_exposure"] + 0.15) if cfg["use_sim"] else cfg["max_exposure"],
+                        seed=cfg["seed"], extra=extra,
+                        progress=progress)
     if not cand:
         raise ValueError("The optimizer found no lineups. Loosen the settings.")
 
@@ -876,61 +805,30 @@ def build_lineups(
     if cfg["use_sim"]:
         ev = evaluate_lineups(cand, X, field_l)
         own_sum = np.array([pool.own.to_numpy()[L].sum() for L in cand])
-        metric = (
-            ev["p_top1"].to_numpy()
-            * (field_baseline / np.clip(own_sum, 1, None)) ** cfg["uniq_w"]
-        )
-        metric = (
-            metric + 0.01 * ev["p_top10"].to_numpy()
-        )  # tie-break toward higher top-10% odds
-        chosen = select_from_pool(
-            cand,
-            metric,
-            n,
-            cfg["min_unique"],
-            cfg["max_exposure"],
-            rules.roster_size,
-            len(pool),
-        )
-        notes.append(
-            f"Ranked {len(cand)} candidate lineups by simulated top-1% odds against a "
-            f"{len(field_l)}-lineup ownership-weighted field."
-        )
+        metric = ev["p_top1"].to_numpy() * (field_baseline / np.clip(own_sum, 1, None)) ** cfg["uniq_w"]
+        metric = metric + 0.01 * ev["p_top10"].to_numpy()  # tie-break toward higher top-10% odds
+        chosen = select_from_pool(cand, metric, n, cfg["min_unique"], cfg["max_exposure"], rules.roster_size, len(pool))
+        notes.append(f"Ranked {len(cand)} candidate lineups by simulated top-1% odds against a "
+                     f"{len(field_l)}-lineup ownership-weighted field.")
     else:
         chosen = cand
     if len(chosen) < n:
-        notes.append(
-            f"Only {len(chosen)} of {n} lineups met the uniqueness / exposure limits. Raise the candidate "
-            f"pool, variety or max exposure to get more."
-        )
+        notes.append(f"Only {len(chosen)} of {n} lineups met the uniqueness / exposure limits. Raise the candidate "
+                     f"pool, variety or max exposure to get more.")
     ev = evaluate_lineups(chosen, X, field_l)
-    stats = pd.DataFrame([lineup_metrics(pool, L, rules.budget) for L in chosen]).join(
-        ev
-    )
+    stats = pd.DataFrame([lineup_metrics(pool, L, rules.budget) for L in chosen]).join(ev)
     stats.insert(0, "lineup", range(1, len(stats) + 1))
     if len(field_l) < 50:
-        notes.append(
-            "Field simulation had too few valid lineups; win odds are approximate."
-        )
-    return {
-        "pool": pool,
-        "lineups": chosen,
-        "stats": stats,
-        "notes": notes,
-        "field_baseline": field_baseline,
-    }
+        notes.append("Field simulation had too few valid lineups; win odds are approximate.")
+    return {"pool": pool, "lineups": chosen, "stats": stats, "notes": notes, "field_baseline": field_baseline}
 
 
-def order_slots(
-    pool: pd.DataFrame, idxs: Sequence[int], rules: Rules
-) -> list[tuple[str, int]]:
+def order_slots(pool: pd.DataFrame, idxs: Sequence[int], rules: Rules) -> list[tuple[str, int]]:
     """Names each player's slot: QB, RB1.., WR1.., TE, FLEX, DST."""
     out: list[tuple[str, int]] = []
     extra: list[int] = []
     for pos in POS_ORDER:
-        members = sorted(
-            [i for i in idxs if pool.pos[i] == pos], key=lambda i: -pool.proj[i]
-        )
+        members = sorted([i for i in idxs if pool.pos[i] == pos], key=lambda i: -pool.proj[i])
         k = rules.slot_min[pos]
         for j, i in enumerate(members[:k]):
             out.append((pos if k == 1 else f"{pos}{j + 1}", i))
@@ -948,18 +846,13 @@ def lineup_metrics(pool: pd.DataFrame, idxs: Sequence[int], budget: float) -> di
         q = qb.iloc[0]
         mates = sub[(sub.team == q.team) & (~sub.pos.isin(["QB", "DST"]))]
         foes = sub[(sub.opp == q.team) & (sub.pos != "DST")]
-        label = f"{q.team} QB" + (
-            "".join("+" + p for p in mates.pos) if len(mates) else " solo"
-        )
+        label = f"{q.team} QB" + ("".join("+" + p for p in mates.pos) if len(mates) else " solo")
         if len(foes):
             label += f" | BB {q.opp} " + "+".join(foes.pos)
     return {
-        "salary": float(sub.salary.sum()),
-        "left": float(budget - sub.salary.sum()),
-        "proj": float(sub.proj.sum()),
-        "proj_adj": float((sub.proj * sub.p_play).sum()),
-        "floor": float(sub.floor.sum()),
-        "ceil": float(sub.ceil.sum()),
+        "salary": float(sub.salary.sum()), "left": float(budget - sub.salary.sum()),
+        "proj": float(sub.proj.sum()), "proj_adj": float((sub.proj * sub.p_play).sum()),
+        "floor": float(sub.floor.sum()), "ceil": float(sub.ceil.sum()),
         "own_sum": float(sub.own.sum()) if "own" in sub else 0.0,
         "own_avg": float(sub.own.mean()) if "own" in sub else 0.0,
         "chalk": int((sub.own > 25).sum()) if "own" in sub else 0,

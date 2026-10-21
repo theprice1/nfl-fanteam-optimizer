@@ -7,6 +7,7 @@ Deploy:        push to GitHub, then create the app on share.streamlit.io (main f
 from __future__ import annotations
 
 import io
+import re
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -16,6 +17,7 @@ import pandas as pd
 import streamlit as st
 
 import engine as E
+import scraper
 from theme import hero, inject_css, lineup_card
 
 st.set_page_config(page_title="Gridiron Lab - Fanteam NFL", page_icon="🏈", layout="wide",
@@ -32,7 +34,7 @@ MODE_HELP = {
                   "low-owned pieces. Fewer cashes, more upside when the chalk misses.",
     "Pure projection": "Straight projected points with no risk or ownership adjustments.",
 }
-OWN_KEYS = {"sharp": 0.75, "w_proj": 0.90, "w_value": 0.70, "w_team": 0.35, "pen_possible": 0.70, "pen_unexpected": 2.00}
+OWN_KEYS = asdict(E.OwnParams())
 for _k, _v in OWN_KEYS.items():
     st.session_state.setdefault(f"op_{_k}", _v)
 st.session_state.setdefault("own_ver", 0)
@@ -50,40 +52,86 @@ def read_csv_bytes(b: bytes) -> pd.DataFrame:
 # ----------------------------------------------------------------------------
 # Callbacks (run before the script reruns, so state is ready for every tab)
 # ----------------------------------------------------------------------------
-def cb_apply_paste() -> None:
-    ctx = st.session_state.get("_ctx")
-    rows = E.parse_ownership_text(st.session_state.get("paste_text", ""))
-    if not ctx or not rows:
-        st.session_state["paste_msg"] = "No ownership lines found. Use one 'Player, 23.4%' per line."
+def cb_fetch() -> None:
+    try:
+        res = scraper.scrape()
+        st.session_state["fetched"] = {k: res[k] for k in ("players", "games", "week", "updated")}
+        st.session_state["fetch_msg"] = (f"Fetched week {res['week']} (page updated {res['updated']}): "
+                                         f"{len(res['players'])} players, {len(res['games'])} games.")
+    except Exception as exc:  # network or page-layout problem: show it, keep the app running
+        st.session_state["fetch_msg"] = f"Fetch failed: {exc}"
+
+
+def cb_clear_fetch() -> None:
+    st.session_state.pop("fetched", None)
+    st.session_state["fetch_msg"] = ""
+
+
+def cb_reset_params() -> None:
+    for k, v in asdict(E.OwnParams()).items():
+        st.session_state[f"op_{k}"] = float(v)
+
+
+def cb_apply_results() -> None:
+    """Read a pasted Fanteam table (or simple 'Name, 23.4%' lines) and store real ownership."""
+    ctx, text = st.session_state.get("_ctx"), st.session_state.get("paste_text", "")
+    if not ctx:
         return
-    matched, unmatched = E.match_ownership(rows, ctx["feat"])
-    st.session_state["own_paste"] = dict(zip(matched["name"], matched["actual"]))
-    st.session_state["paste_unmatched"] = unmatched
-    st.session_state["paste_msg"] = f"Matched {len(matched)} of {len(rows)} lines."
+    feat = ctx["feat"]
+    table = E.parse_fanteam_table(text)
+    if len(table):
+        pct, unmatched = {}, []
+        for r in table.itertuples(index=False):
+            hit = E._match_row(feat, r.name, r.pos, r.team)
+            if hit is None:
+                unmatched.append(r.name)
+            else:
+                pct[feat.at[hit, "name"]] = 0.0 if pd.isna(r.own_pct) else float(r.own_pct)
+        played = set(pct)
+        if len(table) >= 60:  # a full results table: anyone not in it did not play (safety net replaced them)
+            for n in feat["name"]:
+                pct.setdefault(n, 0.0)
+        st.session_state.update(results_table=table, own_paste=pct, played_names=played, paste_unmatched=unmatched,
+                                paste_msg=f"Read {len(table)} players, matched {len(played)}.")
+        return
+    rows = E.parse_ownership_text(text)
+    if not rows:
+        st.session_state["paste_msg"] = "Nothing recognised. Paste the Fanteam table or 'Player, 23.4%' lines."
+        return
+    matched, unmatched = E.match_ownership(rows, feat)
+    pct = dict(zip(matched["name"], matched["actual"]))
+    st.session_state.update(results_table=None, own_paste=pct, played_names=set(pct), paste_unmatched=unmatched,
+                            paste_msg=f"Matched {len(matched)} of {len(rows)} lines.")
 
 
 def cb_clear_overrides() -> None:
     st.session_state["own_paste"] = {}
     st.session_state["own_manual"] = {}
+    st.session_state["results_table"] = None
+    st.session_state["played_names"] = set()
     st.session_state["own_ver"] += 1
     st.session_state["paste_unmatched"] = []
     st.session_state["paste_msg"] = ""
 
 
 def cb_fit() -> None:
-    ctx, paste = st.session_state.get("_ctx"), st.session_state.get("own_paste")
-    if not ctx or not paste:
-        st.session_state["paste_msg"] = "Paste and apply post-lock ownership first."
+    ctx, table = st.session_state.get("_ctx"), st.session_state.get("results_table")
+    frames = E.load_history(DATA / "history")
+    if ctx and table is not None and len(table):
+        frames = frames + [E.build_training_frame(ctx["feat"], table)]
+    if not ctx or not frames:
+        st.session_state["paste_msg"] = "Apply a full Fanteam results table first (or save earlier weeks in data/history)."
         return
-    fit, before, after = E.fit_ownership_params(ctx["feat"], ctx["rules"], paste, ctx["params"])
-    st.session_state["fit"] = {"params": asdict(fit), "before": before, "after": after}
+    fit, _, after = E.fit_ownership(frames, ctx["rules"], E.OwnParams())
+    before = E.evaluate_ownership(frames, ctx["params"], ctx["rules"])
+    st.session_state["fit"] = {"params": asdict(fit), "before": before, "after": after, "weeks": len(frames)}
 
 
 def cb_apply_fit() -> None:
     fit = st.session_state.get("fit")
     if fit:
-        for k, v in fit["params"].items():
-            st.session_state[f"op_{k}"] = float(v)
+        for k in E.FIT_FIELDS:
+            st.session_state[f"op_{k}"] = float(fit["params"][k])
 
 
 def cb_log() -> None:
@@ -108,11 +156,21 @@ with st.sidebar:
                           help="Daily Fantasy Tips Fanteam export. Leave empty to use the file in /data.")
     gup = st.file_uploader("Games CSV (optional)", type="csv",
                            help="Columns: away, home, total, away_implied, home_implied")
+    f1, f2 = st.columns(2)
+    f1.button("Fetch latest", on_click=cb_fetch,
+              help="Pulls this week's Fanteam projections and game totals from dailyfantasy.tips")
+    f2.button("Clear fetch", on_click=cb_clear_fetch)
+    if st.session_state.get("fetch_msg"):
+        st.caption(st.session_state["fetch_msg"])
+    with st.expander("Fanteam player list (optional)", expanded=False):
+        st.caption("Paste the Fanteam player table. Players missing from the projections are added with a "
+                   "price-and-form estimate, so cheap plays the source skipped are not lost.")
+        st.text_area("Fanteam table", key="price_text", height=110, label_visibility="collapsed")
 
     with st.expander("Contest rules", expanded=False):
         st.caption("Check these against the Fanteam lobby each week.")
         budget = st.number_input("Budget (credits)", 50.0, 300.0, 110.0, 0.5)
-        max_team = st.number_input("Max players per NFL team", 1, 9, 4, 1)
+        max_team = st.number_input("Max players per NFL team", 1, 9, 3, 1)
         dst_team = st.toggle("Defense counts toward team limit", True)
         c = st.columns(5)
         mins = {p: c[i].number_input(p, 0, 3, v, 1, key=f"min_{p}")
@@ -126,40 +184,64 @@ with st.sidebar:
         pp_unx = st.slider("Unexpected", 0.00, 0.80, 0.25, 0.05)
 
     with st.expander("Ownership model", expanded=False):
-        st.caption("Fanteam shows no ownership before lock. This estimates it; refine after lock on the Post-lock tab.")
-        st.slider("Chalk sharpness", 0.30, 2.50, step=0.05, key="op_sharp")
-        st.slider("Weight: projection rank", 0.0, 1.5, step=0.05, key="op_w_proj")
-        st.slider("Weight: points per credit", 0.0, 1.5, step=0.05, key="op_w_value")
-        st.slider("Weight: team implied total", 0.0, 1.5, step=0.05, key="op_w_team")
-        st.slider("Penalty: possible", 0.0, 3.0, step=0.1, key="op_pen_possible")
+        st.caption("Fitted on Week 6 Fanteam results. Refit after each lock on the Post-lock tab.")
+        st.slider("Overall sharpness", 0.3, 2.5, step=0.05, key="op_sharp")
+        st.slider("Projection", -0.5, 2.0, step=0.02, key="op_b_proj")
+        st.slider("Points per credit", -0.5, 2.0, step=0.02, key="op_b_value")
+        st.slider("Recent form", -0.5, 2.0, step=0.02, key="op_b_form")
+        st.slider("Price (negative = cheap is popular)", -1.5, 0.5, step=0.02, key="op_b_price")
+        st.slider("Team implied total", -0.5, 1.0, step=0.02, key="op_b_team")
+        st.slider("Penalty: possible", 0.0, 3.0, step=0.05, key="op_pen_possible")
         st.slider("Penalty: unexpected", 0.0, 4.0, step=0.1, key="op_pen_unexpected")
+        st.caption("Spread by position (higher = more concentrated)")
+        for _pos in ("qb", "rb", "wr", "te", "dst"):
+            st.slider(_pos.upper(), 0.3, 2.5, step=0.05, key=f"op_tau_{_pos}")
+        st.button("Reset to fitted defaults", on_click=cb_reset_params)
 
 # ----------------------------------------------------------------------------
 # Load data
 # ----------------------------------------------------------------------------
 hero_slot = st.container()
 
+def _week_no(p: Path) -> int:
+    m = re.search(r"(\d+)", p.stem)
+    return int(m.group(1)) if m else -1
+
+
+def _latest(pattern: str) -> Path | None:
+    files = sorted(DATA.glob(pattern), key=_week_no)
+    return files[-1] if files else None
+
+
+fetched = st.session_state.get("fetched")
 try:
     if up is not None:
-        raw = read_csv_bytes(up.getvalue())
-        data_label = up.name
+        raw, data_label = read_csv_bytes(up.getvalue()), up.name
+    elif fetched is not None:
+        raw, data_label = fetched["players"], f"dailyfantasy.tips week {fetched['week']} ({fetched['updated']})"
     else:
-        files = sorted(DATA.glob("nfl_fanteam*.csv"))
-        if not files:
-            st.info("Upload a projections CSV in the sidebar to begin.")
+        latest = _latest("nfl_fanteam*.csv")
+        if latest is None:
+            st.info("Upload a projections CSV or press Fetch latest in the sidebar to begin.")
             st.stop()
-        raw = read_csv_bytes(files[-1].read_bytes())
-        data_label = files[-1].name
+        raw, data_label = read_csv_bytes(latest.read_bytes()), latest.name
     players = E.load_players(raw)
 except ValueError as exc:
     st.error(str(exc))
     st.stop()
 
+added_players: list[str] = []
+price_df = E.parse_fanteam_table(st.session_state.get("price_text", ""))
+if len(price_df):
+    players, added_players = E.add_unprojected(players, price_df)
+
 if gup is not None:
     games0 = E.load_games(read_csv_bytes(gup.getvalue()))
+elif fetched is not None and len(fetched["games"]) and fetched["games"]["away_implied"].notna().any():
+    games0 = E.load_games(fetched["games"])
 else:
-    gfiles = sorted(DATA.glob("*games*.csv"))
-    games0 = E.load_games(read_csv_bytes(gfiles[-1].read_bytes())) if gfiles else E.games_from_players(players)
+    lg = _latest("*games*.csv")
+    games0 = E.load_games(read_csv_bytes(lg.read_bytes())) if lg else E.games_from_players(players)
 sig = f"{data_label}-{len(players)}-{len(games0)}-{int(games0['total'].fillna(0).sum() * 10)}"
 
 tab_slate, tab_own, tab_build, tab_post = st.tabs(["Slate", "Ownership", "Build lineups", "Post-lock"])
@@ -212,6 +294,10 @@ with hero_slot:
 # ----------------------------------------------------------------------------
 with tab_slate:
     st.markdown("#### Players")
+    st.caption(f"Source: {data_label}")
+    if added_players:
+        st.info(f"Added {len(added_players)} players missing from the projections (estimated from price and form): "
+                + ", ".join(added_players[:12]) + ("..." if len(added_players) > 12 else ""))
     f1, f2, f3, f4 = st.columns([1.2, 1.4, 1.2, 1.2])
     pos_sel = f1.multiselect("Position", E.POS_ORDER, default=E.POS_ORDER)
     team_sel = f2.multiselect("Team", sorted(feat.team.unique()))
@@ -421,53 +507,96 @@ with tab_build:
 # Post-lock tab
 # ----------------------------------------------------------------------------
 with tab_post:
-    st.markdown("#### Post-lock ownership and calibration")
-    st.caption("Once the contest locks, paste the real ownership from the Fanteam lobby, one 'Player, 23.4%' per line. "
-               "The app replaces the estimate for those players, scores the model, and can fit better settings.")
-    st.text_area("Pasted ownership", height=170, key="paste_text", placeholder="Josh Allen, 31.2%\nPuka Nacua, 28.5%")
-    c1, c2 = st.columns([1, 1])
-    c1.button("Apply pasted ownership", type="primary", on_click=cb_apply_paste)
-    c2.button("Fit model to pasted ownership", on_click=cb_fit)
+    st.markdown("#### Post-lock results and calibration")
+    st.caption("After lock, copy the whole Fanteam table (Player, Pos, Team, Price, Own %, Form, Score) into the box. "
+               "Anyone missing from a full table did not play and counts as 0%. The app swaps in the real ownership, "
+               "checks both the ownership and the projections, and can refit the model on every week you have saved.")
+    st.text_area("Fanteam results table", height=200, key="paste_text",
+                 placeholder="Malik Nabers   WR   NYG   13.8M   30.23%   14.78   28.50\nKenneth Walker   RB   KC   19.1M   30.95%   27.52   27.90")
+    c1, c2 = st.columns(2)
+    c1.button("Apply results", type="primary", on_click=cb_apply_results)
+    c2.button("Fit ownership model", on_click=cb_fit)
     if st.session_state.get("paste_msg"):
         st.caption(st.session_state["paste_msg"])
     if st.session_state.get("paste_unmatched"):
-        st.warning("Could not match: " + ", ".join(st.session_state["paste_unmatched"][:15]))
+        st.warning("Not in the projections file (kept out of the comparison): "
+                   + ", ".join(st.session_state["paste_unmatched"][:15]))
 
-    paste = st.session_state["own_paste"]
+    paste, table = st.session_state["own_paste"], st.session_state.get("results_table")
+    played = st.session_state.get("played_names") or set(paste)
     if paste:
-        chk = feat[feat.name.isin(paste)][["name", "pos", "team", "own_model"]].copy()
+        chk = feat[feat.name.isin(played)][["name", "pos", "team", "own_model"]].copy()
         chk["actual"] = chk.name.map(paste)
         chk["error"] = chk.own_model - chk.actual
         err = E.ownership_error(chk.own_model, chk.actual)
+        st.markdown("##### Ownership: estimate vs real")
         m = st.columns(3)
         m[0].metric("Players compared", err["n"])
-        m[1].metric("Average miss (pts of own%)", f"{err['mae']:.1f}")
+        m[1].metric("Average miss (pts of own%)", f"{err['mae']:.2f}")
         m[2].metric("Correlation", "n/a" if np.isnan(err["corr"]) else f"{err['corr']:.2f}")
-        st.dataframe(chk.reindex(chk.error.abs().sort_values(ascending=False).index), hide_index=True, column_config={
-            "name": "Player", "pos": "Pos", "team": "Team",
-            "own_model": st.column_config.NumberColumn("Model %", format="%.1f"),
-            "actual": st.column_config.NumberColumn("Actual %", format="%.1f"),
-            "error": st.column_config.NumberColumn("Model minus actual", format="%+.1f"),
-        })
+        st.dataframe(chk.reindex(chk.error.abs().sort_values(ascending=False).index), hide_index=True, height=300,
+                     column_config={"name": "Player", "pos": "Pos", "team": "Team",
+                                    "own_model": st.column_config.NumberColumn("Model %", format="%.1f"),
+                                    "actual": st.column_config.NumberColumn("Actual %", format="%.1f"),
+                                    "error": st.column_config.NumberColumn("Model minus actual", format="%+.1f")})
 
+    if table is not None and table["score"].notna().any():
+        rows = []
+        for r in table.itertuples(index=False):
+            hit = E._match_row(feat, r.name, r.pos, r.team)
+            if hit is not None and pd.notna(r.score) and feat.at[hit, "proj_src"] == "source":
+                rows.append({"pos": r.pos, "proj": float(feat.at[hit, "proj"]), "score": float(r.score)})
+        acc = pd.DataFrame(rows)
+        if len(acc):
+            st.markdown("##### Projections: expected vs real points")
+            out = []
+            for pos, g in acc.groupby("pos"):
+                resid_cv = float((g.score - g.proj).std() / g.proj.mean())
+                out.append({"pos": pos, "players": len(g), "avg_proj": g.proj.mean(), "avg_score": g.score.mean(),
+                            "bias": g.score.mean() - g.proj.mean(),
+                            "corr": float(g.proj.corr(g.score)) if len(g) > 2 else np.nan,
+                            "implied_sigma": float(np.sqrt(np.log(1 + resid_cv ** 2))), "model_sigma": E.SIGMA[pos]})
+            st.dataframe(pd.DataFrame(out), hide_index=True, column_config={
+                "avg_proj": st.column_config.NumberColumn("Avg proj", format="%.1f"),
+                "avg_score": st.column_config.NumberColumn("Avg score", format="%.1f"),
+                "bias": st.column_config.NumberColumn("Bias", format="%+.1f"),
+                "corr": st.column_config.NumberColumn("Corr", format="%.2f"),
+                "implied_sigma": st.column_config.NumberColumn("Spread seen", format="%.2f",
+                                                               help="Log-normal spread implied by this week's misses"),
+                "model_sigma": st.column_config.NumberColumn("Spread in model", format="%.2f"),
+            })
+            st.caption("Spread seen well above the model's means the simulation is too tame for that position. "
+                       "One week is noisy, so adjust SIGMA in engine.py only after several weeks agree.")
+        training = E.build_training_frame(feat, table)
+        st.download_button("Download training file for history (CSV)", training.to_csv(index=False),
+                           file_name=f"{slate_name.replace(' ', '_').lower()}_training.csv", mime="text/csv",
+                           help="Save into data/history/ and commit. Every saved week is used when you fit the model.")
+
+    hist = E.load_history(DATA / "history")
+    st.caption(f"{len(hist)} earlier week(s) saved in data/history are used when fitting.")
     fit = st.session_state.get("fit")
     if fit:
         st.markdown("##### Fitted settings")
         m = st.columns(4)
-        m[0].metric("Miss before", f"{fit['before']['mae']:.2f}")
-        m[1].metric("Miss after", f"{fit['after']['mae']:.2f}")
-        m[2].metric("Sharpness", f"{fit['params']['sharp']:.2f}")
-        m[3].metric("Value weight", f"{fit['params']['w_value']:.2f}")
+        m[0].metric("Weeks used", fit["weeks"])
+        m[1].metric("Miss, current settings", f"{fit['before']['mae']:.2f}")
+        m[2].metric("Miss, fitted", f"{fit['after']['mae']:.2f}")
+        m[3].metric("Correlation, fitted", f"{fit['after']['corr']:.2f}")
+        cmp = pd.DataFrame({"setting": E.FIT_FIELDS,
+                            "current": [float(st.session_state[f"op_{k}"]) for k in E.FIT_FIELDS],
+                            "fitted": [fit["params"][k] for k in E.FIT_FIELDS]})
+        st.dataframe(cmp, hide_index=True, column_config={
+            "current": st.column_config.NumberColumn(format="%.2f"), "fitted": st.column_config.NumberColumn(format="%.2f")})
         b1, b2 = st.columns(2)
         b1.button("Use fitted settings", on_click=cb_apply_fit)
         b2.button("Add to calibration log", on_click=cb_log)
 
     hist_file = DATA / "calibration_log.csv"
-    hist = pd.read_csv(hist_file) if hist_file.exists() else pd.DataFrame()
-    log = pd.concat([hist, pd.DataFrame(st.session_state["calib_log"])], ignore_index=True)
-    if len(log):
+    log_df = pd.concat([pd.read_csv(hist_file) if hist_file.exists() else pd.DataFrame(),
+                        pd.DataFrame(st.session_state["calib_log"])], ignore_index=True)
+    if len(log_df):
         st.markdown("##### Calibration log")
-        st.dataframe(log, hide_index=True)
-        st.download_button("Download calibration log (CSV)", log.to_csv(index=False),
+        st.dataframe(log_df, hide_index=True)
+        st.download_button("Download calibration log (CSV)", log_df.to_csv(index=False),
                            file_name="calibration_log.csv", mime="text/csv")
         st.caption("Save the file as data/calibration_log.csv and commit it so the history survives app restarts.")
