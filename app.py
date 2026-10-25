@@ -4,6 +4,7 @@ app.py - Fanteam NFL lineup optimizer (Streamlit).
 Run locally:   streamlit run app.py
 Deploy:        push to GitHub, then create the app on share.streamlit.io (main file: app.py)
 """
+
 from __future__ import annotations
 
 import io
@@ -20,20 +21,24 @@ import engine as E
 import scraper
 from theme import hero, inject_css, lineup_card
 
-st.set_page_config(page_title="Gridiron Lab - Fanteam NFL", page_icon="🏈", layout="wide",
-                   initial_sidebar_state="expanded")
+st.set_page_config(
+    page_title="Gridiron Lab - Fanteam NFL",
+    page_icon="🏈",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 inject_css()
 
 DATA = Path(__file__).parent / "data"
 POS_RANK = {p: i for i, p in enumerate(E.POS_ORDER)}
 MODE_HELP = {
     "Auto": "One click for the tournament. Tests every viable quarterback, stack shape and leverage level, scores each "
-            "candidate against a simulated field with a prize curve, and keeps the best set within your exposure limits.",
+    "candidate against a simulated field with a prize curve, and keeps the best set within your exposure limits.",
     "Cash": "Floor-weighted projection, no ownership penalty. For head-to-heads, 50/50s and double-ups.",
     "GPP": "Ceiling-weighted with a QB stack and bring-back, a mild ownership penalty, and lineups ranked by "
-           "simulated top-1% odds against a field built from the ownership projection.",
+    "simulated top-1% odds against a field built from the ownership projection.",
     "Contrarian": "GPP with a heavier ownership penalty, a cap on chalk players and total ownership, and forced "
-                  "low-owned pieces. Fewer cashes, more upside when the chalk misses.",
+    "low-owned pieces. Fewer cashes, more upside when the chalk misses.",
     "Pure projection": "Straight projected points with no risk or ownership adjustments.",
 }
 OWN_KEYS = asdict(E.OwnParams())
@@ -57,12 +62,21 @@ def read_csv_bytes(b: bytes) -> pd.DataFrame:
 def cb_fetch() -> None:
     try:
         res = scraper.scrape()
-        st.session_state["fetched"] = {k: res[k] for k in ("players", "games", "week", "updated")}
+        st.session_state["fetched"] = {
+            k: res[k] for k in ("players", "games", "week", "updated")
+        }
         if res["week"]:
             st.session_state["slate_name"] = f"NFL Week {res['week']}"
-        st.session_state["fetch_msg"] = (f"Fetched week {res['week']} (page updated {res['updated']}): "
-                                         f"{len(res['players'])} players, {len(res['games'])} games.")
-    except (OSError, ValueError, RuntimeError, KeyError) as exc:  # network or page-layout problem: show it
+        st.session_state["fetch_msg"] = (
+            f"Fetched week {res['week']} (page updated {res['updated']}): "
+            f"{len(res['players'])} players, {len(res['games'])} games."
+        )
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+        KeyError,
+    ) as exc:  # network or page-layout problem: show it
         st.session_state["fetch_msg"] = f"Fetch failed: {exc}"
 
 
@@ -90,22 +104,38 @@ def cb_apply_results() -> None:
             if hit is None:
                 unmatched.append(r.name)
             else:
-                pct[feat.at[hit, "name"]] = 0.0 if pd.isna(r.own_pct) else float(r.own_pct)
+                pct[feat.at[hit, "name"]] = (
+                    0.0 if pd.isna(r.own_pct) else float(r.own_pct)
+                )
         played = set(pct)
-        if len(table) >= 60:  # a full results table: anyone not in it did not play (safety net replaced them)
+        if (
+            len(table) >= 60
+        ):  # a full results table: anyone not in it did not play (safety net replaced them)
             for n in feat["name"]:
                 pct.setdefault(n, 0.0)
-        st.session_state.update(results_table=table, own_paste=pct, played_names=played, paste_unmatched=unmatched,
-                                paste_msg=f"Read {len(table)} players, matched {len(played)}.")
+        st.session_state.update(
+            results_table=table,
+            own_paste=pct,
+            played_names=played,
+            paste_unmatched=unmatched,
+            paste_msg=f"Read {len(table)} players, matched {len(played)}.",
+        )
         return
     rows = E.parse_ownership_text(text)
     if not rows:
-        st.session_state["paste_msg"] = "Nothing recognised. Paste the Fanteam table or 'Player, 23.4%' lines."
+        st.session_state["paste_msg"] = (
+            "Nothing recognised. Paste the Fanteam table or 'Player, 23.4%' lines."
+        )
         return
     matched, unmatched = E.match_ownership(rows, feat)
     pct = dict(zip(matched["name"], matched["actual"]))
-    st.session_state.update(results_table=None, own_paste=pct, played_names=set(pct), paste_unmatched=unmatched,
-                            paste_msg=f"Matched {len(matched)} of {len(rows)} lines.")
+    st.session_state.update(
+        results_table=None,
+        own_paste=pct,
+        played_names=set(pct),
+        paste_unmatched=unmatched,
+        paste_msg=f"Matched {len(matched)} of {len(rows)} lines.",
+    )
 
 
 def cb_clear_overrides() -> None:
@@ -124,11 +154,18 @@ def cb_fit() -> None:
     if ctx and table is not None and len(table):
         frames = frames + [E.build_training_frame(ctx["feat"], table)]
     if not ctx or not frames:
-        st.session_state["paste_msg"] = "Apply a full Fanteam results table first (or save earlier weeks in data/history)."
+        st.session_state["paste_msg"] = (
+            "Apply a full Fanteam results table first (or save earlier weeks in data/history)."
+        )
         return
     fit, _, after = E.fit_ownership(frames, ctx["rules"], E.OwnParams())
     before = E.evaluate_ownership(frames, ctx["params"], ctx["rules"])
-    st.session_state["fit"] = {"params": asdict(fit), "before": before, "after": after, "weeks": len(frames)}
+    st.session_state["fit"] = {
+        "params": asdict(fit),
+        "before": before,
+        "after": after,
+        "weeks": len(frames),
+    }
 
 
 def cb_apply_fit() -> None:
@@ -142,12 +179,18 @@ def cb_log() -> None:
     fit = st.session_state.get("fit")
     if not fit:
         return
-    st.session_state["calib_log"].append({
-        "slate": st.session_state.get("slate_name", ""), "logged": time.strftime("%Y-%m-%d %H:%M"),
-        "players": fit["before"]["n"], "mae_before": round(fit["before"]["mae"], 3),
-        "mae_after": round(fit["after"]["mae"], 3), "corr_before": round(fit["before"]["corr"], 3),
-        "corr_after": round(fit["after"]["corr"], 3), **{f"fit_{k}": round(v, 3) for k, v in fit["params"].items()},
-    })
+    st.session_state["calib_log"].append(
+        {
+            "slate": st.session_state.get("slate_name", ""),
+            "logged": time.strftime("%Y-%m-%d %H:%M"),
+            "players": fit["before"]["n"],
+            "mae_before": round(fit["before"]["mae"], 3),
+            "mae_after": round(fit["after"]["mae"], 3),
+            "corr_before": round(fit["before"]["corr"], 3),
+            "corr_after": round(fit["after"]["corr"], 3),
+            **{f"fit_{k}": round(v, 3) for k, v in fit["params"].items()},
+        }
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -156,21 +199,36 @@ def cb_log() -> None:
 with st.sidebar:
     st.markdown("### Slate")
     slate_name = st.text_input("Slate name", "NFL Week 6", key="slate_name")
-    up = st.file_uploader("Projections CSV", type="csv",
-                          help="Daily Fantasy Tips Fanteam export. Leave empty to use the file in /data.")
-    gup = st.file_uploader("Games CSV (optional)", type="csv",
-                           help="Columns: away, home, total, away_implied, home_implied")
+    up = st.file_uploader(
+        "Projections CSV",
+        type="csv",
+        help="Daily Fantasy Tips Fanteam export. Leave empty to use the file in /data.",
+    )
+    gup = st.file_uploader(
+        "Games CSV (optional)",
+        type="csv",
+        help="Columns: away, home, total, away_implied, home_implied",
+    )
     f1, f2 = st.columns(2)
-    f1.button("Fetch latest", on_click=cb_fetch,
-              help="Pulls this week's Fanteam projections and game totals from dailyfantasy.tips")
+    f1.button(
+        "Fetch latest",
+        on_click=cb_fetch,
+        help="Pulls this week's Fanteam projections and game totals from dailyfantasy.tips",
+    )
     f2.button("Clear fetch", on_click=cb_clear_fetch)
     if st.session_state.get("fetch_msg"):
         st.caption(st.session_state["fetch_msg"])
     with st.expander("Fanteam player list (optional)", expanded=False):
-        st.caption("Paste the Fanteam player table. Players missing from the projections are added with a "
-                   "price-and-form estimate, so cheap plays the source skipped are not lost.")
-        pl_up = st.file_uploader("Fanteam player list file", type=["csv", "txt"], key="pl_up",
-                                 help="A CSV from Fanteam, or text saved from the player table")
+        st.caption(
+            "Paste the Fanteam player table. Players missing from the projections are added with a "
+            "price-and-form estimate, so cheap plays the source skipped are not lost."
+        )
+        pl_up = st.file_uploader(
+            "Fanteam player list file",
+            type=["csv", "txt"],
+            key="pl_up",
+            help="A CSV from Fanteam, or text saved from the player table",
+        )
         st.text_area("Or paste the table", key="price_text", height=90)
 
     with st.expander("Contest rules", expanded=False):
@@ -179,23 +237,37 @@ with st.sidebar:
         max_team = st.number_input("Max players per NFL team", 1, 9, 3, 1)
         dst_team = st.toggle("Defense counts toward team limit", True)
         c = st.columns(5)
-        mins = {p: c[i].number_input(p, 0, 3, v, 1, key=f"min_{p}")
-                for i, (p, v) in enumerate({"QB": 1, "RB": 2, "WR": 3, "TE": 1, "DST": 1}.items())}
+        mins = {
+            p: c[i].number_input(p, 0, 3, v, 1, key=f"min_{p}")
+            for i, (p, v) in enumerate(
+                {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "DST": 1}.items()
+            )
+        }
         flex = st.toggle("FLEX slot (RB / WR / TE)", True)
 
     with st.expander("Availability", expanded=False):
-        st.caption("Chance a player plays. Scales every projection in the optimizer and simulation.")
+        st.caption(
+            "Chance a player plays. Scales every projection in the optimizer and simulation."
+        )
         pp_exp = st.slider("Expected", 0.80, 1.00, 0.98, 0.01)
         pp_pos = st.slider("Possible", 0.20, 1.00, 0.70, 0.05)
         pp_unx = st.slider("Unexpected", 0.00, 0.80, 0.25, 0.05)
 
     with st.expander("Ownership model", expanded=False):
-        st.caption("Fitted on Week 6 Fanteam results. Refit after each lock on the Post-lock tab.")
+        st.caption(
+            "Fitted on Week 6 Fanteam results. Refit after each lock on the Post-lock tab."
+        )
         st.slider("Overall sharpness", 0.3, 2.5, step=0.05, key="op_sharp")
         st.slider("Projection", -0.5, 2.0, step=0.02, key="op_b_proj")
         st.slider("Points per credit", -0.5, 2.0, step=0.02, key="op_b_value")
         st.slider("Recent form", -0.5, 2.0, step=0.02, key="op_b_form")
-        st.slider("Price (negative = cheap is popular)", -1.5, 0.5, step=0.02, key="op_b_price")
+        st.slider(
+            "Price (negative = cheap is popular)",
+            -1.5,
+            0.5,
+            step=0.02,
+            key="op_b_price",
+        )
         st.slider("Team implied total", -0.5, 1.0, step=0.02, key="op_b_team")
         st.slider("Penalty: possible", 0.0, 3.0, step=0.05, key="op_pen_possible")
         st.slider("Penalty: unexpected", 0.0, 4.0, step=0.1, key="op_pen_unexpected")
@@ -208,6 +280,7 @@ with st.sidebar:
 # Load data
 # ----------------------------------------------------------------------------
 hero_slot = st.container()
+
 
 def _week_no(p: Path) -> int:
     m = re.search(r"(\d+)", p.stem)
@@ -224,11 +297,16 @@ try:
     if up is not None:
         raw, data_label = read_csv_bytes(up.getvalue()), up.name
     elif fetched is not None:
-        raw, data_label = fetched["players"], f"dailyfantasy.tips week {fetched['week']} ({fetched['updated']})"
+        raw, data_label = (
+            fetched["players"],
+            f"dailyfantasy.tips week {fetched['week']} ({fetched['updated']})",
+        )
     else:
         latest = _latest("nfl_fanteam*.csv")
         if latest is None:
-            st.info("Upload a projections CSV or press Fetch latest in the sidebar to begin.")
+            st.info(
+                "Upload a projections CSV or press Fetch latest in the sidebar to begin."
+            )
             st.stop()
         raw, data_label = read_csv_bytes(latest.read_bytes()), latest.name
     players = E.load_players(raw)
@@ -246,37 +324,61 @@ if len(price_df):
 
 if gup is not None:
     games0 = E.load_games(read_csv_bytes(gup.getvalue()))
-elif fetched is not None and len(fetched["games"]) and fetched["games"]["away_implied"].notna().any():
+elif (
+    fetched is not None
+    and len(fetched["games"])
+    and fetched["games"]["away_implied"].notna().any()
+):
     games0 = E.load_games(fetched["games"])
 else:
     lg = _latest("*games*.csv")
-    games0 = E.load_games(read_csv_bytes(lg.read_bytes())) if lg else E.games_from_players(players)
+    games0 = (
+        E.load_games(read_csv_bytes(lg.read_bytes()))
+        if lg
+        else E.games_from_players(players)
+    )
 sig = f"{data_label}-{len(players)}-{len(games0)}-{int(games0['total'].fillna(0).sum() * 10)}"
 
-tab_slate, tab_own, tab_build, tab_post = st.tabs(["Slate", "Ownership", "Build lineups", "Post-lock"])
+tab_slate, tab_own, tab_build, tab_post = st.tabs(
+    ["Slate", "Ownership", "Build lineups", "Post-lock"]
+)
 
 # ----------------------------------------------------------------------------
 # Slate tab (part 1: games)
 # ----------------------------------------------------------------------------
 with tab_slate:
     st.markdown("#### Games and implied totals")
-    st.caption("Edit totals or implied points if lines move. Blank implied totals fall back to the slate average.")
+    st.caption(
+        "Edit totals or implied points if lines move. Blank implied totals fall back to the slate average."
+    )
     games = st.data_editor(
-        games0, key=f"games_{sig}", hide_index=True, num_rows="fixed",
+        games0,
+        key=f"games_{sig}",
+        hide_index=True,
+        num_rows="fixed",
         column_config={
             "away": st.column_config.TextColumn("Away", disabled=True),
             "home": st.column_config.TextColumn("Home", disabled=True),
             "total": st.column_config.NumberColumn("Total", format="%.1f", step=0.5),
-            "away_implied": st.column_config.NumberColumn("Away implied", format="%.1f", step=0.25),
-            "home_implied": st.column_config.NumberColumn("Home implied", format="%.1f", step=0.25),
+            "away_implied": st.column_config.NumberColumn(
+                "Away implied", format="%.1f", step=0.25
+            ),
+            "home_implied": st.column_config.NumberColumn(
+                "Home implied", format="%.1f", step=0.25
+            ),
         },
     )
 
 # ----------------------------------------------------------------------------
 # Model: features + ownership
 # ----------------------------------------------------------------------------
-rules = E.Rules(budget=float(budget), slot_min={p: int(v) for p, v in mins.items()}, flex=bool(flex),
-                max_per_team=int(max_team), dst_counts_for_team=bool(dst_team))
+rules = E.Rules(
+    budget=float(budget),
+    slot_min={p: int(v) for p, v in mins.items()},
+    flex=bool(flex),
+    max_per_team=int(max_team),
+    dst_counts_for_team=bool(dst_team),
+)
 play_prob = {"expected": pp_exp, "possible": pp_pos, "unexpected": pp_unx}
 params = E.OwnParams(**{k: float(st.session_state[f"op_{k}"]) for k in OWN_KEYS})
 feat = E.add_features(players, E.implied_map(E.load_games(games)), play_prob)
@@ -295,8 +397,14 @@ def apply_layers(base: pd.Series, layers: list[dict]) -> pd.Series:
 
 
 with hero_slot:
-    hero("Gridiron Lab", f"Fanteam NFL optimizer - {slate_name}",
-         [(r.away, r.home, None if pd.isna(r.total) else float(r.total)) for r in games.itertuples()])
+    hero(
+        "Gridiron Lab",
+        f"Fanteam NFL optimizer - {slate_name}",
+        [
+            (r.away, r.home, None if pd.isna(r.total) else float(r.total))
+            for r in games.itertuples()
+        ],
+    )
 
 # ----------------------------------------------------------------------------
 # Slate tab (part 2: players)
@@ -305,13 +413,19 @@ with tab_slate:
     st.markdown("#### Players")
     st.caption(f"Source: {data_label}")
     if added_players:
-        st.info(f"Added {len(added_players)} players missing from the projections (estimated from price and form): "
-                + ", ".join(added_players[:12]) + ("..." if len(added_players) > 12 else ""))
+        st.info(
+            f"Added {len(added_players)} players missing from the projections (estimated from price and form): "
+            + ", ".join(added_players[:12])
+            + ("..." if len(added_players) > 12 else "")
+        )
     f1, f2, f3, f4 = st.columns([1.2, 1.4, 1.2, 1.2])
     pos_sel = f1.multiselect("Position", E.POS_ORDER, default=E.POS_ORDER)
     team_sel = f2.multiselect("Team", sorted(feat.team.unique()))
-    status_sel = f3.multiselect("Status", ["expected", "possible", "unexpected"],
-                                default=["expected", "possible", "unexpected"])
+    status_sel = f3.multiselect(
+        "Status",
+        ["expected", "possible", "unexpected"],
+        default=["expected", "possible", "unexpected"],
+    )
     search = f4.text_input("Search player")
     view = feat[feat.pos.isin(pos_sel) & feat.status.isin(status_sel)]
     if team_sel:
@@ -319,22 +433,49 @@ with tab_slate:
     if search:
         view = view[view.name.str.contains(search, case=False, regex=False)]
     show = view.sort_values("proj", ascending=False)[
-        ["name", "pos", "team", "opp", "salary", "proj", "value", "floor", "ceil", "status", "implied", "form", "last"]]
+        [
+            "name",
+            "pos",
+            "team",
+            "opp",
+            "salary",
+            "proj",
+            "value",
+            "floor",
+            "ceil",
+            "status",
+            "implied",
+            "form",
+            "last",
+        ]
+    ]
     st.dataframe(
-        show, hide_index=True, height=460,
+        show,
+        hide_index=True,
+        height=460,
         column_config={
-            "name": "Player", "pos": "Pos", "team": "Team", "opp": "Opp",
+            "name": "Player",
+            "pos": "Pos",
+            "team": "Team",
+            "opp": "Opp",
             "salary": st.column_config.NumberColumn("Salary", format="%.1f"),
             "proj": st.column_config.NumberColumn("Proj", format="%.2f"),
             "value": st.column_config.NumberColumn("Pts/credit", format="%.2f"),
-            "floor": st.column_config.NumberColumn("Floor", format="%.1f", help="20th percentile outcome"),
-            "ceil": st.column_config.NumberColumn("Ceiling", format="%.1f", help="90th percentile outcome"),
-            "status": "Status", "implied": st.column_config.NumberColumn("Team pts", format="%.1f"),
+            "floor": st.column_config.NumberColumn(
+                "Floor", format="%.1f", help="20th percentile outcome"
+            ),
+            "ceil": st.column_config.NumberColumn(
+                "Ceiling", format="%.1f", help="90th percentile outcome"
+            ),
+            "status": "Status",
+            "implied": st.column_config.NumberColumn("Team pts", format="%.1f"),
             "form": st.column_config.NumberColumn("Form", format="%.1f"),
             "last": st.column_config.NumberColumn("Last", format="%.1f"),
         },
     )
-    st.caption("Salary against projection - players well above the cloud are the value plays.")
+    st.caption(
+        "Salary against projection - players well above the cloud are the value plays."
+    )
     st.scatter_chart(view, x="salary", y="proj", color="pos", height=320)
 
 # ----------------------------------------------------------------------------
@@ -342,37 +483,67 @@ with tab_slate:
 # ----------------------------------------------------------------------------
 with tab_own:
     st.markdown("#### Projected ownership")
-    st.caption("Model estimate, then your post-lock paste, then any manual edit. The most specific source wins. "
-               "Edits here feed the optimizer, the contrarian limits and the field simulation.")
-    own_df = (feat.assign(_p=feat.pos.map(POS_RANK)).sort_values(["_p", "proj"], ascending=[True, False])
-              [["name", "pos", "team", "salary", "proj", "own_model"]].copy())
+    st.caption(
+        "Model estimate, then your post-lock paste, then any manual edit. The most specific source wins. "
+        "Edits here feed the optimizer, the contrarian limits and the field simulation."
+    )
+    own_df = (
+        feat.assign(_p=feat.pos.map(POS_RANK))
+        .sort_values(["_p", "proj"], ascending=[True, False])[
+            ["name", "pos", "team", "salary", "proj", "own_model"]
+        ]
+        .copy()
+    )
     own_df["override"] = np.nan
     edited = st.data_editor(
-        own_df, key=f"own_ed_{st.session_state['own_ver']}", hide_index=True, height=420,
+        own_df,
+        key=f"own_ed_{st.session_state['own_ver']}",
+        hide_index=True,
+        height=420,
         disabled=["name", "pos", "team", "salary", "proj", "own_model"],
         column_config={
-            "name": "Player", "pos": "Pos", "team": "Team",
+            "name": "Player",
+            "pos": "Pos",
+            "team": "Team",
             "salary": st.column_config.NumberColumn("Salary", format="%.1f"),
             "proj": st.column_config.NumberColumn("Proj", format="%.1f"),
             "own_model": st.column_config.NumberColumn("Model own %", format="%.1f"),
-            "override": st.column_config.NumberColumn("Override %", min_value=0.0, max_value=100.0, step=0.5,
-                                                      format="%.1f", help="Type your own ownership estimate"),
+            "override": st.column_config.NumberColumn(
+                "Override %",
+                min_value=0.0,
+                max_value=100.0,
+                step=0.5,
+                format="%.1f",
+                help="Type your own ownership estimate",
+            ),
         },
     )
-    st.session_state["own_manual"] = {n: float(v) for n, v in zip(edited["name"], edited["override"]) if pd.notna(v)}
-    feat["own"] = apply_layers(feat["own_model"], [st.session_state["own_paste"], st.session_state["own_manual"]])
+    st.session_state["own_manual"] = {
+        n: float(v) for n, v in zip(edited["name"], edited["override"]) if pd.notna(v)
+    }
+    feat["own"] = apply_layers(
+        feat["own_model"],
+        [st.session_state["own_paste"], st.session_state["own_manual"]],
+    )
     st.button("Clear pasted and manual ownership", on_click=cb_clear_overrides)
 
     top = feat.sort_values("own", ascending=False).head(18)
     st.markdown("##### Most owned")
     st.bar_chart(top.set_index("name")["own"], height=260)
-    st.caption(f"Typical field lineup owns about {float((feat.own / 100 * feat.own).sum()):.0f}% in total across nine players.")
+    st.caption(
+        f"Typical field lineup owns about {float((feat.own / 100 * feat.own).sum()):.0f}% in total across nine players."
+    )
 
 # ----------------------------------------------------------------------------
 # Build tab
 # ----------------------------------------------------------------------------
 with tab_build:
-    mode = st.radio("Lineup type", ["Auto", "Cash", "GPP", "Contrarian", "Pure projection"], horizontal=True, key="mode")
+    mode = st.radio(
+        "Lineup type",
+        ["Auto", "Cash", "GPP", "Contrarian", "Pure projection"],
+        horizontal=True,
+        key="mode",
+    )
     st.caption(MODE_HELP[mode])
     k = mode.lower().replace(" ", "_")
     cfg = E.default_cfg(mode)
@@ -381,94 +552,341 @@ with tab_build:
 
     if mode == "Auto":
         a, b, c = st.columns(3)
-        cfg["n"] = int(a.number_input("Lineups to build", 1, 150, cfg["n"], 1, key=f"{k}_n"))
-        cfg["ladder"] = b.selectbox("Contest size", list(E.LADDERS), key=f"{k}_ladder",
-                                    help="Sets how top-heavy the prize curve is. Bigger fields reward upside more.")
-        depth = c.select_slider("Search depth", ["Fast", "Standard", "Deep"], "Standard", key=f"{k}_depth",
-                                help="How many candidate lineups are tested. Deep takes the longest.")
+        cfg["n"] = int(
+            a.number_input("Lineups to build", 1, 150, cfg["n"], 1, key=f"{k}_n")
+        )
+        cfg["ladder"] = b.selectbox(
+            "Contest size",
+            list(E.LADDERS),
+            key=f"{k}_ladder",
+            help="Sets how top-heavy the prize curve is. Bigger fields reward upside more.",
+        )
+        depth = c.select_slider(
+            "Search depth",
+            ["Fast", "Standard", "Deep"],
+            "Standard",
+            key=f"{k}_depth",
+            help="How many candidate lineups are tested. Deep takes the longest.",
+        )
         cfg["candidates"] = {"Fast": 60, "Standard": 120, "Deep": 240}[depth]
         a, b, c = st.columns(3)
-        cfg["max_exposure"] = float(a.slider("Max exposure per player", 0.1, 1.0, float(cfg["max_exposure"]), 0.05,
-                                             key=f"{k}_exp"))
-        cfg["qb_max_exposure"] = float(b.slider("Max exposure per quarterback", 0.1, 1.0,
-                                                float(cfg["qb_max_exposure"]), 0.05, key=f"{k}_qbexp"))
-        cfg["risky_max_exposure"] = float(c.slider("Max exposure, uncertain players", 0.05, 1.0,
-                                                   float(cfg["risky_max_exposure"]), 0.05, key=f"{k}_rexp",
-                                                   help="Players marked possible or unexpected"))
-        cfg["min_unique"] = int(st.number_input("Min different players between lineups", 1, 6, cfg["min_unique"], 1,
-                                                key=f"{k}_uniq"))
+        cfg["max_exposure"] = float(
+            a.slider(
+                "Max exposure per player",
+                0.1,
+                1.0,
+                float(cfg["max_exposure"]),
+                0.05,
+                key=f"{k}_exp",
+            )
+        )
+        cfg["qb_max_exposure"] = float(
+            b.slider(
+                "Max exposure per quarterback",
+                0.1,
+                1.0,
+                float(cfg["qb_max_exposure"]),
+                0.05,
+                key=f"{k}_qbexp",
+            )
+        )
+        cfg["risky_max_exposure"] = float(
+            c.slider(
+                "Max exposure, uncertain players",
+                0.05,
+                1.0,
+                float(cfg["risky_max_exposure"]),
+                0.05,
+                key=f"{k}_rexp",
+                help="Players marked possible or unexpected",
+            )
+        )
+        cfg["min_unique"] = int(
+            st.number_input(
+                "Min different players between lineups",
+                1,
+                6,
+                cfg["min_unique"],
+                1,
+                key=f"{k}_uniq",
+            )
+        )
+
+        # --- ADVANCED STRUCTURAL RULES UI ---
+        with st.expander("Advanced Structural Rules (Auto)", expanded=False):
+            st.caption("Smart DFS rules applied during optimization and ranking.")
+
+            d, e, f = st.columns(3)
+            cfg["limit_unstacked_teams"] = d.toggle(
+                "Max 1 player per unstacked team",
+                cfg.get("limit_unstacked_teams", True),
+                help="Forces you to either stack a team with its QB, or only use 1 player from it (prevents naked pairs).",
+            )
+            cfg["no_qb_dst_stack"] = e.toggle(
+                "No QB + DST from same team", cfg.get("no_qb_dst_stack", True)
+            )
+            cfg["max_rb_per_team"] = int(
+                f.number_input(
+                    "Max RBs per team", 1, 3, cfg.get("max_rb_per_team", 1), 1
+                )
+            )
+
+            g, h, i = st.columns(3)
+            cfg["max_bring_back"] = int(
+                g.slider(
+                    "Max opposing players (Bring-back)",
+                    0,
+                    3,
+                    cfg.get("max_bring_back", 1),
+                    1,
+                )
+            )
+            cfg["qb_rb_multiplier"] = float(
+                h.slider(
+                    "QB + RB stack value multiplier",
+                    0.5,
+                    1.5,
+                    cfg.get("qb_rb_multiplier", 0.85),
+                    0.05,
+                    help="Reduces the priority of lineups that stack a QB with their own RB (negative correlation).",
+                )
+            )
+            cfg["rb_dst_multiplier"] = float(
+                i.slider(
+                    "RB + DST stack multiplier",
+                    0.5,
+                    1.5,
+                    cfg.get("rb_dst_multiplier", 1.15),
+                    0.05,
+                    help="Boosts the priority of lineups pairing an RB with their defense (positive correlation).",
+                )
+            )
+
+            cfg["te_flex_multiplier"] = float(
+                g.slider(
+                    "2+ TEs value multiplier",
+                    0.5,
+                    1.5,
+                    cfg.get("te_flex_multiplier", 0.90),
+                    0.05,
+                    help="Penalizes lineups that use a Tight End in the FLEX spot.",
+                )
+            )
     else:
         a, b, c = st.columns(3)
         cfg["n"] = int(a.number_input("Lineups", 1, 150, cfg["n"], 1, key=f"{k}_n"))
-        cfg["min_unique"] = int(b.number_input("Min different players between lineups", 1, 6, cfg["min_unique"], 1,
-                                               key=f"{k}_uniq"))
-        cfg["max_exposure"] = float(c.slider("Max exposure per player", 0.1, 1.0, float(cfg["max_exposure"]), 0.05,
-                                             key=f"{k}_exp"))
+        cfg["min_unique"] = int(
+            b.number_input(
+                "Min different players between lineups",
+                1,
+                6,
+                cfg["min_unique"],
+                1,
+                key=f"{k}_uniq",
+            )
+        )
+        cfg["max_exposure"] = float(
+            c.slider(
+                "Max exposure per player",
+                0.1,
+                1.0,
+                float(cfg["max_exposure"]),
+                0.05,
+                key=f"{k}_exp",
+            )
+        )
 
     if mode == "Cash":
-        cfg["floor_w"] = st.slider("Floor weight (0 = projection only, 1 = floor only)", 0.0, 1.0,
-                                   cfg["floor_w"], 0.05, key=f"{k}_fw")
+        cfg["floor_w"] = st.slider(
+            "Floor weight (0 = projection only, 1 = floor only)",
+            0.0,
+            1.0,
+            cfg["floor_w"],
+            0.05,
+            key=f"{k}_fw",
+        )
     if mode in ("GPP", "Contrarian"):
         a, b, c = st.columns(3)
-        cfg["upside_w"] = a.slider("Upside weight (ceiling vs projection)", 0.0, 1.0, cfg["upside_w"], 0.05,
-                                   key=f"{k}_uw")
-        cfg["lev"] = b.slider("Ownership leverage", 0.0, 1.0, cfg["lev"], 0.05, key=f"{k}_lev",
-                              help="Discounts popular players. 0.5 trims a 40%-owned player's value by 20%.")
-        cfg["pct_opt"] = c.slider("Stay within % of best projection", 0.70, 1.0, cfg["pct_opt"], 0.01,
-                                  key=f"{k}_pct")
+        cfg["upside_w"] = a.slider(
+            "Upside weight (ceiling vs projection)",
+            0.0,
+            1.0,
+            cfg["upside_w"],
+            0.05,
+            key=f"{k}_uw",
+        )
+        cfg["lev"] = b.slider(
+            "Ownership leverage",
+            0.0,
+            1.0,
+            cfg["lev"],
+            0.05,
+            key=f"{k}_lev",
+            help="Discounts popular players. 0.5 trims a 40%-owned player's value by 20%.",
+        )
+        cfg["pct_opt"] = c.slider(
+            "Stay within % of best projection",
+            0.70,
+            1.0,
+            cfg["pct_opt"],
+            0.01,
+            key=f"{k}_pct",
+        )
         a, b, c = st.columns(3)
-        cfg["stack_min"] = int(a.slider("QB stack: teammates (WR/TE)", 0, 3, cfg["stack_min"], 1, key=f"{k}_stk"))
-        cfg["bring_back"] = int(b.slider("Bring-back from opponent", 0, 2, cfg["bring_back"], 1, key=f"{k}_bb"))
-        cfg["rand"] = float(c.slider("Variety (random noise)", 0.0, 0.4, float(cfg["rand"]), 0.01, key=f"{k}_rand"))
+        cfg["stack_min"] = int(
+            a.slider(
+                "QB stack: teammates (WR/TE)", 0, 3, cfg["stack_min"], 1, key=f"{k}_stk"
+            )
+        )
+        cfg["bring_back"] = int(
+            b.slider(
+                "Bring-back from opponent", 0, 2, cfg["bring_back"], 1, key=f"{k}_bb"
+            )
+        )
+        cfg["rand"] = float(
+            c.slider(
+                "Variety (random noise)",
+                0.0,
+                0.4,
+                float(cfg["rand"]),
+                0.01,
+                key=f"{k}_rand",
+            )
+        )
     if mode == "Contrarian":
         with st.expander("Contrarian limits", expanded=True):
             a, b, c = st.columns(3)
-            cfg["max_chalk"] = int(a.slider("Max chalk players", 0, 5, cfg["max_chalk"], 1, key=f"{k}_mc"))
-            cfg["chalk_thr"] = float(b.slider("Chalk means owned above %", 10.0, 40.0, cfg["chalk_thr"], 1.0,
-                                              key=f"{k}_ct"))
-            cfg["own_cap_pct"] = float(c.slider("Total ownership vs typical field lineup (%)", 40.0, 120.0,
-                                                cfg["own_cap_pct"], 5.0, key=f"{k}_cap"))
+            cfg["max_chalk"] = int(
+                a.slider("Max chalk players", 0, 5, cfg["max_chalk"], 1, key=f"{k}_mc")
+            )
+            cfg["chalk_thr"] = float(
+                b.slider(
+                    "Chalk means owned above %",
+                    10.0,
+                    40.0,
+                    cfg["chalk_thr"],
+                    1.0,
+                    key=f"{k}_ct",
+                )
+            )
+            cfg["own_cap_pct"] = float(
+                c.slider(
+                    "Total ownership vs typical field lineup (%)",
+                    40.0,
+                    120.0,
+                    cfg["own_cap_pct"],
+                    5.0,
+                    key=f"{k}_cap",
+                )
+            )
             a, b, c = st.columns(3)
-            cfg["low_min"] = int(a.slider("Min low-owned players", 0, 6, cfg["low_min"], 1, key=f"{k}_lm"))
-            cfg["low_thr"] = float(b.slider("Low-owned means below %", 2.0, 20.0, cfg["low_thr"], 1.0, key=f"{k}_lt"))
-            cfg["uniq_w"] = float(c.slider("Reward unique lineups when ranking", 0.0, 1.5, cfg["uniq_w"], 0.1,
-                                           key=f"{k}_uw2"))
+            cfg["low_min"] = int(
+                a.slider(
+                    "Min low-owned players", 0, 6, cfg["low_min"], 1, key=f"{k}_lm"
+                )
+            )
+            cfg["low_thr"] = float(
+                b.slider(
+                    "Low-owned means below %",
+                    2.0,
+                    20.0,
+                    cfg["low_thr"],
+                    1.0,
+                    key=f"{k}_lt",
+                )
+            )
+            cfg["uniq_w"] = float(
+                c.slider(
+                    "Reward unique lineups when ranking",
+                    0.0,
+                    1.5,
+                    cfg["uniq_w"],
+                    0.1,
+                    key=f"{k}_uw2",
+                )
+            )
     if mode in ("GPP", "Contrarian"):
         a, b = st.columns(2)
-        cfg["use_sim"] = a.toggle("Rank by simulated top-1% odds", cfg["use_sim"], key=f"{k}_sim")
-        cfg["pool_size"] = int(b.slider("Candidate pool size", 20, 300, cfg["pool_size"], 10, key=f"{k}_pool",
-                                        disabled=not cfg["use_sim"]))
+        cfg["use_sim"] = a.toggle(
+            "Rank by simulated top-1% odds", cfg["use_sim"], key=f"{k}_sim"
+        )
+        cfg["pool_size"] = int(
+            b.slider(
+                "Candidate pool size",
+                20,
+                300,
+                cfg["pool_size"],
+                10,
+                key=f"{k}_pool",
+                disabled=not cfg["use_sim"],
+            )
+        )
 
     with st.expander("Player pool and extra rules", expanded=False):
         a, b = st.columns(2)
         drop_unx = a.toggle("Exclude 'unexpected' players", True, key=f"{k}_dropunx")
         drop_pos = b.toggle("Exclude 'possible' players", False, key=f"{k}_droppos")
         a, b = st.columns(2)
-        min_proj = a.slider("Ignore players projected below", 0.0, 10.0, 2.0, 0.5, key=f"{k}_minproj")
-        cfg["dst_vs_offense"] = b.toggle("No defense facing my offensive players", True, key=f"{k}_dstvo")
+        min_proj = a.slider(
+            "Ignore players projected below", 0.0, 10.0, 2.0, 0.5, key=f"{k}_minproj"
+        )
+        cfg["dst_vs_offense"] = b.toggle(
+            "No defense facing my offensive players", True, key=f"{k}_dstvo"
+        )
         cfg["locks"] = st.multiselect("Lock players in", names_sorted, key=f"{k}_locks")
-        banned = st.multiselect("Remove players (out or fade)", names_sorted, key=f"{k}_ban")
-        cfg["qb_allowed"] = st.multiselect("Only these quarterbacks", qbs, key=f"{k}_qbs")
-        excl_teams = st.multiselect("Exclude teams", sorted(feat.team.unique()), key=f"{k}_xt")
+        banned = st.multiselect(
+            "Remove players (out or fade)", names_sorted, key=f"{k}_ban"
+        )
+        cfg["qb_allowed"] = st.multiselect(
+            "Only these quarterbacks", qbs, key=f"{k}_qbs"
+        )
+        excl_teams = st.multiselect(
+            "Exclude teams", sorted(feat.team.unique()), key=f"{k}_xt"
+        )
         a, b = st.columns(2)
         if a.toggle("Limit unspent credits", False, key=f"{k}_lo"):
-            cfg["max_leftover"] = float(b.slider("Max credits left", 0.0, 10.0, 2.0, 0.5, key=f"{k}_lov"))
+            cfg["max_leftover"] = float(
+                b.slider("Max credits left", 0.0, 10.0, 2.0, 0.5, key=f"{k}_lov")
+            )
         a, b = st.columns(2)
-        cfg["n_sims"] = int(a.select_slider("Simulations", [1000, 2000, 3000, 4000], cfg["n_sims"], key=f"{k}_nsim"))
+        cfg["n_sims"] = int(
+            a.select_slider(
+                "Simulations", [1000, 2000, 3000, 4000], cfg["n_sims"], key=f"{k}_nsim"
+            )
+        )
         cfg["seed"] = int(b.number_input("Random seed", 0, 9999, 1, 1, key=f"{k}_seed"))
 
-    if st.button("Build tournament lineups" if mode == "Auto" else f"Build {mode} lineups", type="primary", key=f"{k}_run"):
+    if st.button(
+        "Build tournament lineups" if mode == "Auto" else f"Build {mode} lineups",
+        type="primary",
+        key=f"{k}_run",
+    ):
         pool = feat.copy()
         if drop_unx:
             pool = pool[pool.status != "unexpected"]
         if drop_pos:
             pool = pool[pool.status != "possible"]
-        pool = pool[(pool.proj >= min_proj) & ~pool.name.isin(banned) & ~pool.team.isin(excl_teams)]
+        pool = pool[
+            (pool.proj >= min_proj)
+            & ~pool.name.isin(banned)
+            & ~pool.team.isin(excl_teams)
+        ]
         pool = pool.reset_index(drop=True)
         bar = st.progress(0.0, text="Optimizing...")
         try:
-            res = E.build_lineups(pool, rules, cfg, progress=lambda f: bar.progress(min(f, 1.0), text=f"Optimizing {f:.0%}"))
-            res["rules"], res["cfg"], res["built"] = rules, cfg, time.strftime("%H:%M:%S")
+            res = E.build_lineups(
+                pool,
+                rules,
+                cfg,
+                progress=lambda f: bar.progress(
+                    min(f, 1.0), text=f"Optimizing {f:.0%}"
+                ),
+            )
+            res["rules"], res["cfg"], res["built"] = (
+                rules,
+                cfg,
+                time.strftime("%H:%M:%S"),
+            )
             st.session_state["results"][mode] = res
         except ValueError as exc:
             st.session_state["results"].pop(mode, None)
@@ -484,10 +902,13 @@ with tab_build:
         m[1].metric("Avg projection", f"{stats.proj.mean():.1f}")
         if "portfolio" in res:
             pf = res["portfolio"]
-            m[2].metric("Payout index", f"{pf['expected_return']:.1f}",
-                        help="Average simulated payout per lineup against the simulated field, in entry fees. "
-                             "Use it to compare lineups and settings, not as a forecast: the simulated field is weaker "
-                             "than a real one.")
+            m[2].metric(
+                "Payout index",
+                f"{pf['expected_return']:.1f}",
+                help="Average simulated payout per lineup against the simulated field, in entry fees. "
+                "Use it to compare lineups and settings, not as a forecast: the simulated field is weaker "
+                "than a real one.",
+            )
             m[3].metric("Any lineup top 1%", f"{pf['p_any_top1'] * 100:.0f}%")
             m[4].metric("Any lineup top 10%", f"{pf['p_any_top10'] * 100:.0f}%")
         else:
@@ -499,88 +920,173 @@ with tab_build:
         ex = E.exposure_table(res)
         unsure = ex[ex.name.isin(pool[pool.status != "expected"].name)]
         if len(unsure):
-            st.warning("Confirm before lock: " + ", ".join(
-                f"{r.name} ({pool.loc[pool.name == r.name, 'status'].iloc[0]}, {r.exposure:.0f}% of lineups)"
-                for r in unsure.itertuples()))
+            st.warning(
+                "Confirm before lock: "
+                + ", ".join(
+                    f"{r.name} ({pool.loc[pool.name == r.name, 'status'].iloc[0]}, {r.exposure:.0f}% of lineups)"
+                    for r in unsure.itertuples()
+                )
+            )
 
         v1, v2, v3 = st.tabs(["Lineups", "Table", "Exposure"])
         with v1:
-            limit = len(stats) if st.toggle("Show all lineups", len(stats) <= 10, key=f"{k}_showall") else 10
+            limit = (
+                len(stats)
+                if st.toggle("Show all lineups", len(stats) <= 10, key=f"{k}_showall")
+                else 10
+            )
             for i, L in enumerate(res["lineups"][:limit]):
-                slots = [(s, pool.loc[j].to_dict()) for s, j in E.order_slots(pool, L, rl)]
-                st.markdown(lineup_card(i + 1, slots, stats.iloc[i].to_dict()), unsafe_allow_html=True)
+                slots = [
+                    (s, pool.loc[j].to_dict()) for s, j in E.order_slots(pool, L, rl)
+                ]
+                st.markdown(
+                    lineup_card(i + 1, slots, stats.iloc[i].to_dict()),
+                    unsafe_allow_html=True,
+                )
         with v2:
             tbl = stats.drop(columns=["idx"]).copy()
             for col in ("p_cash", "p_top10", "p_top1"):
                 tbl[col] = tbl[col] * 100
-            st.dataframe(tbl, hide_index=True, column_config={
-                "lineup": "#", "salary": st.column_config.NumberColumn("Spend", format="%.1f"),
-                "left": st.column_config.NumberColumn("Left", format="%.1f"),
-                "proj": st.column_config.NumberColumn("Proj", format="%.1f"),
-                "proj_adj": st.column_config.NumberColumn("Proj (availability)", format="%.1f"),
-                "floor": st.column_config.NumberColumn("Floor", format="%.1f"),
-                "ceil": st.column_config.NumberColumn("Ceiling", format="%.1f"),
-                "own_sum": st.column_config.NumberColumn("Own sum %", format="%.0f"),
-                "own_avg": st.column_config.NumberColumn("Own avg %", format="%.1f"),
-                "p_cash": st.column_config.ProgressColumn("Cash odds %", min_value=0.0, max_value=100.0, format="%.0f"),
-                "p_top10": st.column_config.ProgressColumn("Top 10% odds", min_value=0.0, max_value=100.0, format="%.1f"),
-                "p_top1": st.column_config.ProgressColumn("Top 1% odds", min_value=0.0, max_value=30.0, format="%.1f"),
-                "sim_mean": st.column_config.NumberColumn("Sim mean", format="%.1f"),
-                "sim_p90": st.column_config.NumberColumn("Sim 90th", format="%.1f"),
-                "ev": st.column_config.NumberColumn("Payout index", format="%.2f"),
-                "adj_ev": st.column_config.NumberColumn("Ranking score", format="%.2f"),
-            })
+            st.dataframe(
+                tbl,
+                hide_index=True,
+                column_config={
+                    "lineup": "#",
+                    "salary": st.column_config.NumberColumn("Spend", format="%.1f"),
+                    "left": st.column_config.NumberColumn("Left", format="%.1f"),
+                    "proj": st.column_config.NumberColumn("Proj", format="%.1f"),
+                    "proj_adj": st.column_config.NumberColumn(
+                        "Proj (availability)", format="%.1f"
+                    ),
+                    "floor": st.column_config.NumberColumn("Floor", format="%.1f"),
+                    "ceil": st.column_config.NumberColumn("Ceiling", format="%.1f"),
+                    "own_sum": st.column_config.NumberColumn(
+                        "Own sum %", format="%.0f"
+                    ),
+                    "own_avg": st.column_config.NumberColumn(
+                        "Own avg %", format="%.1f"
+                    ),
+                    "p_cash": st.column_config.ProgressColumn(
+                        "Cash odds %", min_value=0.0, max_value=100.0, format="%.0f"
+                    ),
+                    "p_top10": st.column_config.ProgressColumn(
+                        "Top 10% odds", min_value=0.0, max_value=100.0, format="%.1f"
+                    ),
+                    "p_top1": st.column_config.ProgressColumn(
+                        "Top 1% odds", min_value=0.0, max_value=30.0, format="%.1f"
+                    ),
+                    "sim_mean": st.column_config.NumberColumn(
+                        "Sim mean", format="%.1f"
+                    ),
+                    "sim_p90": st.column_config.NumberColumn("Sim 90th", format="%.1f"),
+                    "ev": st.column_config.NumberColumn("Payout index", format="%.2f"),
+                    "adj_ev": st.column_config.NumberColumn(
+                        "Ranking score", format="%.2f"
+                    ),
+                },
+            )
         with v3:
-            st.dataframe(ex, hide_index=True, column_config={
-                "exposure": st.column_config.ProgressColumn("Exposure %", min_value=0.0, max_value=100.0, format="%.0f"),
-                "own": st.column_config.NumberColumn("Field own %", format="%.1f"),
-                "leverage": st.column_config.NumberColumn("Leverage", format="%+.1f", help="Exposure minus field ownership"),
-            })
+            st.dataframe(
+                ex,
+                hide_index=True,
+                column_config={
+                    "exposure": st.column_config.ProgressColumn(
+                        "Exposure %", min_value=0.0, max_value=100.0, format="%.0f"
+                    ),
+                    "own": st.column_config.NumberColumn("Field own %", format="%.1f"),
+                    "leverage": st.column_config.NumberColumn(
+                        "Leverage",
+                        format="%+.1f",
+                        help="Exposure minus field ownership",
+                    ),
+                },
+            )
         if "portfolio" in res:
-            qb_names = pd.Series([pool.at[next(i for i in L if pool.at[i, "pos"] == "QB"), "name"] for L in res["lineups"]])
+            qb_names = pd.Series(
+                [
+                    pool.at[next(i for i in L if pool.at[i, "pos"] == "QB"), "name"]
+                    for L in res["lineups"]
+                ]
+            )
             st.markdown("##### Quarterback mix")
-            st.dataframe(qb_names.value_counts().rename("lineups").reset_index().rename(columns={"index": "QB", "name": "QB"}),
-                         hide_index=True)
+            st.dataframe(
+                qb_names.value_counts()
+                .rename("lineups")
+                .reset_index()
+                .rename(columns={"index": "QB", "name": "QB"}),
+                hide_index=True,
+            )
         st.markdown("##### Upload file for Fanteam")
-        st.caption("Use this one for Fanteam's CSV upload. The lineups CSV further down has player names for your own "
-                   "reference and will be rejected by Fanteam (its first column is the lineup number).")
-        contest_id = st.text_input("Fanteam tournament ID", key="contest_id",
-                                   help="The number in the first column of a Fanteam upload file for this tournament. "
-                                        "Fanteam addresses look like .../fantasy/dashboard/<tournament id>/...")
+        st.caption(
+            "Use this one for Fanteam's CSV upload. The lineups CSV further down has player names for your own "
+            "reference and will be rejected by Fanteam (its first column is the lineup number)."
+        )
+        contest_id = st.text_input(
+            "Fanteam tournament ID",
+            key="contest_id",
+            help="The number in the first column of a Fanteam upload file for this tournament. "
+            "Fanteam addresses look like .../fantasy/dashboard/<tournament id>/...",
+        )
         cid = re.sub(r"\D", "", contest_id or "")
         if cid:
             up_text, no_id = E.fanteam_upload(res, rl, cid)
             if no_id:
-                st.warning("No Fanteam ID for: " + ", ".join(no_id) + ". Load a Fanteam player list that includes IDs "
-                           "(sidebar) or upload the projections CSV, then rebuild.")
-            st.download_button("Download Fanteam upload (CSV)", up_text, file_name=f"fanteam_nfl_upload_{cid}.csv",
-                               mime="text/csv", type="primary", disabled=bool(no_id))
+                st.warning(
+                    "No Fanteam ID for: "
+                    + ", ".join(no_id)
+                    + ". Load a Fanteam player list that includes IDs "
+                    "(sidebar) or upload the projections CSV, then rebuild."
+                )
+            st.download_button(
+                "Download Fanteam upload (CSV)",
+                up_text,
+                file_name=f"fanteam_nfl_upload_{cid}.csv",
+                mime="text/csv",
+                type="primary",
+                disabled=bool(no_id),
+            )
         else:
             st.caption("Enter the tournament ID to enable the Fanteam upload file.")
         d1, d2 = st.columns(2)
-        d1.download_button("Download lineups with names (reference)", E.lineups_to_frame(res, rl).to_csv(index=False),
-                           file_name=f"{slate_name.replace(' ', '_').lower()}_{k}_lineups.csv", mime="text/csv")
-        d2.download_button("Download exposure (CSV)", ex.to_csv(index=False),
-                           file_name=f"{slate_name.replace(' ', '_').lower()}_{k}_exposure.csv", mime="text/csv")
+        d1.download_button(
+            "Download lineups with names (reference)",
+            E.lineups_to_frame(res, rl).to_csv(index=False),
+            file_name=f"{slate_name.replace(' ', '_').lower()}_{k}_lineups.csv",
+            mime="text/csv",
+        )
+        d2.download_button(
+            "Download exposure (CSV)",
+            ex.to_csv(index=False),
+            file_name=f"{slate_name.replace(' ', '_').lower()}_{k}_exposure.csv",
+            mime="text/csv",
+        )
 
 # ----------------------------------------------------------------------------
 # Post-lock tab
 # ----------------------------------------------------------------------------
 with tab_post:
     st.markdown("#### Post-lock results and calibration")
-    st.caption("After lock, copy the whole Fanteam table (Player, Pos, Team, Price, Own %, Form, Score) into the box. "
-               "Anyone missing from a full table did not play and counts as 0%. The app swaps in the real ownership, "
-               "checks both the ownership and the projections, and can refit the model on every week you have saved.")
-    st.text_area("Fanteam results table", height=200, key="paste_text",
-                 placeholder="Malik Nabers   WR   NYG   13.8M   30.23%   14.78   28.50\nKenneth Walker   RB   KC   19.1M   30.95%   27.52   27.90")
+    st.caption(
+        "After lock, copy the whole Fanteam table (Player, Pos, Team, Price, Own %, Form, Score) into the box. "
+        "Anyone missing from a full table did not play and counts as 0%. The app swaps in the real ownership, "
+        "checks both the ownership and the projections, and can refit the model on every week you have saved."
+    )
+    st.text_area(
+        "Fanteam results table",
+        height=200,
+        key="paste_text",
+        placeholder="Malik Nabers   WR   NYG   13.8M   30.23%   14.78   28.50\nKenneth Walker   RB   KC   19.1M   30.95%   27.52   27.90",
+    )
     c1, c2 = st.columns(2)
     c1.button("Apply results", type="primary", on_click=cb_apply_results)
     c2.button("Fit ownership model", on_click=cb_fit)
     if st.session_state.get("paste_msg"):
         st.caption(st.session_state["paste_msg"])
     if st.session_state.get("paste_unmatched"):
-        st.warning("Not in the projections file (kept out of the comparison): "
-                   + ", ".join(st.session_state["paste_unmatched"][:15]))
+        st.warning(
+            "Not in the projections file (kept out of the comparison): "
+            + ", ".join(st.session_state["paste_unmatched"][:15])
+        )
 
     paste, table = st.session_state["own_paste"], st.session_state.get("results_table")
     played = st.session_state.get("played_names") or set(paste)
@@ -593,47 +1099,98 @@ with tab_post:
         m = st.columns(3)
         m[0].metric("Players compared", err["n"])
         m[1].metric("Average miss (pts of own%)", f"{err['mae']:.2f}")
-        m[2].metric("Correlation", "n/a" if np.isnan(err["corr"]) else f"{err['corr']:.2f}")
-        st.dataframe(chk.reindex(chk.error.abs().sort_values(ascending=False).index), hide_index=True, height=300,
-                     column_config={"name": "Player", "pos": "Pos", "team": "Team",
-                                    "own_model": st.column_config.NumberColumn("Model %", format="%.1f"),
-                                    "actual": st.column_config.NumberColumn("Actual %", format="%.1f"),
-                                    "error": st.column_config.NumberColumn("Model minus actual", format="%+.1f")})
+        m[2].metric(
+            "Correlation", "n/a" if np.isnan(err["corr"]) else f"{err['corr']:.2f}"
+        )
+        st.dataframe(
+            chk.reindex(chk.error.abs().sort_values(ascending=False).index),
+            hide_index=True,
+            height=300,
+            column_config={
+                "name": "Player",
+                "pos": "Pos",
+                "team": "Team",
+                "own_model": st.column_config.NumberColumn("Model %", format="%.1f"),
+                "actual": st.column_config.NumberColumn("Actual %", format="%.1f"),
+                "error": st.column_config.NumberColumn(
+                    "Model minus actual", format="%+.1f"
+                ),
+            },
+        )
 
     if table is not None and table["score"].notna().any():
         rows = []
         for r in table.itertuples(index=False):
             hit = E._match_row(feat, r.name, r.pos, r.team)
-            if hit is not None and pd.notna(r.score) and feat.at[hit, "proj_src"] == "source":
-                rows.append({"pos": r.pos, "proj": float(feat.at[hit, "proj"]), "score": float(r.score)})
+            if (
+                hit is not None
+                and pd.notna(r.score)
+                and feat.at[hit, "proj_src"] == "source"
+            ):
+                rows.append(
+                    {
+                        "pos": r.pos,
+                        "proj": float(feat.at[hit, "proj"]),
+                        "score": float(r.score),
+                    }
+                )
         acc = pd.DataFrame(rows)
         if len(acc):
             st.markdown("##### Projections: expected vs real points")
             out = []
             for pos, g in acc.groupby("pos"):
                 resid_cv = float((g.score - g.proj).std() / g.proj.mean())
-                out.append({"pos": pos, "players": len(g), "avg_proj": g.proj.mean(), "avg_score": g.score.mean(),
-                            "bias": g.score.mean() - g.proj.mean(),
-                            "corr": float(g.proj.corr(g.score)) if len(g) > 2 else np.nan,
-                            "implied_sigma": float(np.sqrt(np.log(1 + resid_cv ** 2))), "model_sigma": E.SIGMA[pos]})
-            st.dataframe(pd.DataFrame(out), hide_index=True, column_config={
-                "avg_proj": st.column_config.NumberColumn("Avg proj", format="%.1f"),
-                "avg_score": st.column_config.NumberColumn("Avg score", format="%.1f"),
-                "bias": st.column_config.NumberColumn("Bias", format="%+.1f"),
-                "corr": st.column_config.NumberColumn("Corr", format="%.2f"),
-                "implied_sigma": st.column_config.NumberColumn("Spread seen", format="%.2f",
-                                                               help="Log-normal spread implied by this week's misses"),
-                "model_sigma": st.column_config.NumberColumn("Spread in model", format="%.2f"),
-            })
-            st.caption("Spread seen well above the model's means the simulation is too tame for that position. "
-                       "One week is noisy, so adjust SIGMA in engine.py only after several weeks agree.")
+                out.append(
+                    {
+                        "pos": pos,
+                        "players": len(g),
+                        "avg_proj": g.proj.mean(),
+                        "avg_score": g.score.mean(),
+                        "bias": g.score.mean() - g.proj.mean(),
+                        "corr": float(g.proj.corr(g.score)) if len(g) > 2 else np.nan,
+                        "implied_sigma": float(np.sqrt(np.log(1 + resid_cv**2))),
+                        "model_sigma": E.SIGMA[pos],
+                    }
+                )
+            st.dataframe(
+                pd.DataFrame(out),
+                hide_index=True,
+                column_config={
+                    "avg_proj": st.column_config.NumberColumn(
+                        "Avg proj", format="%.1f"
+                    ),
+                    "avg_score": st.column_config.NumberColumn(
+                        "Avg score", format="%.1f"
+                    ),
+                    "bias": st.column_config.NumberColumn("Bias", format="%+.1f"),
+                    "corr": st.column_config.NumberColumn("Corr", format="%.2f"),
+                    "implied_sigma": st.column_config.NumberColumn(
+                        "Spread seen",
+                        format="%.2f",
+                        help="Log-normal spread implied by this week's misses",
+                    ),
+                    "model_sigma": st.column_config.NumberColumn(
+                        "Spread in model", format="%.2f"
+                    ),
+                },
+            )
+            st.caption(
+                "Spread seen well above the model's means the simulation is too tame for that position. "
+                "One week is noisy, so adjust SIGMA in engine.py only after several weeks agree."
+            )
         training = E.build_training_frame(feat, table)
-        st.download_button("Download training file for history (CSV)", training.to_csv(index=False),
-                           file_name=f"{slate_name.replace(' ', '_').lower()}_training.csv", mime="text/csv",
-                           help="Save into data/history/ and commit. Every saved week is used when you fit the model.")
+        st.download_button(
+            "Download training file for history (CSV)",
+            training.to_csv(index=False),
+            file_name=f"{slate_name.replace(' ', '_').lower()}_training.csv",
+            mime="text/csv",
+            help="Save into data/history/ and commit. Every saved week is used when you fit the model.",
+        )
 
     hist = E.load_history(DATA / "history")
-    st.caption(f"{len(hist)} earlier week(s) saved in data/history are used when fitting.")
+    st.caption(
+        f"{len(hist)} earlier week(s) saved in data/history are used when fitting."
+    )
     fit = st.session_state.get("fit")
     if fit:
         st.markdown("##### Fitted settings")
@@ -642,21 +1199,42 @@ with tab_post:
         m[1].metric("Miss, current settings", f"{fit['before']['mae']:.2f}")
         m[2].metric("Miss, fitted", f"{fit['after']['mae']:.2f}")
         m[3].metric("Correlation, fitted", f"{fit['after']['corr']:.2f}")
-        cmp = pd.DataFrame({"setting": E.FIT_FIELDS,
-                            "current": [float(st.session_state[f"op_{k}"]) for k in E.FIT_FIELDS],
-                            "fitted": [fit["params"][k] for k in E.FIT_FIELDS]})
-        st.dataframe(cmp, hide_index=True, column_config={
-            "current": st.column_config.NumberColumn(format="%.2f"), "fitted": st.column_config.NumberColumn(format="%.2f")})
+        cmp = pd.DataFrame(
+            {
+                "setting": E.FIT_FIELDS,
+                "current": [float(st.session_state[f"op_{k}"]) for k in E.FIT_FIELDS],
+                "fitted": [fit["params"][k] for k in E.FIT_FIELDS],
+            }
+        )
+        st.dataframe(
+            cmp,
+            hide_index=True,
+            column_config={
+                "current": st.column_config.NumberColumn(format="%.2f"),
+                "fitted": st.column_config.NumberColumn(format="%.2f"),
+            },
+        )
         b1, b2 = st.columns(2)
         b1.button("Use fitted settings", on_click=cb_apply_fit)
         b2.button("Add to calibration log", on_click=cb_log)
 
     hist_file = DATA / "calibration_log.csv"
-    log_df = pd.concat([pd.read_csv(hist_file) if hist_file.exists() else pd.DataFrame(),
-                        pd.DataFrame(st.session_state["calib_log"])], ignore_index=True)
+    log_df = pd.concat(
+        [
+            pd.read_csv(hist_file) if hist_file.exists() else pd.DataFrame(),
+            pd.DataFrame(st.session_state["calib_log"]),
+        ],
+        ignore_index=True,
+    )
     if len(log_df):
         st.markdown("##### Calibration log")
         st.dataframe(log_df, hide_index=True)
-        st.download_button("Download calibration log (CSV)", log_df.to_csv(index=False),
-                           file_name="calibration_log.csv", mime="text/csv")
-        st.caption("Save the file as data/calibration_log.csv and commit it so the history survives app restarts.")
+        st.download_button(
+            "Download calibration log (CSV)",
+            log_df.to_csv(index=False),
+            file_name="calibration_log.csv",
+            mime="text/csv",
+        )
+        st.caption(
+            "Save the file as data/calibration_log.csv and commit it so the history survives app restarts."
+        )

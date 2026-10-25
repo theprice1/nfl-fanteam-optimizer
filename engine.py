@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import difflib
 import io
-import itertools
 import math
 import re
 from collections.abc import Iterable, Sequence
@@ -27,20 +26,18 @@ import pandas as pd
 # --------------------------------------------------------------------------
 POS_ORDER = ["QB", "RB", "WR", "TE", "DST"]
 FLEX_POS = ("RB", "WR", "TE")
-FLEX_SHARE = {"RB": 0.515, "WR": 0.313, "TE": 0.172}  # how the FLEX slot is shared (Week 6 results)
+FLEX_SHARE = {"RB": 0.515, "WR": 0.313, "TE": 0.172}
 
-SIGMA = {"QB": 0.31, "RB": 0.55, "WR": 0.65, "TE": 0.75, "DST": 0.70}  # log-normal spread (Week 6 residuals)
+SIGMA = {"QB": 0.31, "RB": 0.55, "WR": 0.65, "TE": 0.75, "DST": 0.70}
 DEFAULT_PLAY_PROB = {"expected": 0.98, "possible": 0.70, "unexpected": 0.25}
 OWN_CAP = {"QB": 0.28, "RB": 0.40, "WR": 0.45, "TE": 0.45, "DST": 0.22}
 
 
 @dataclass
 class Rules:
-    """Contest rules. Verify these against the Fanteam contest lobby each week."""
-
     budget: float = 110.0
     slot_min: dict = field(default_factory=lambda: {"QB": 1, "RB": 2, "WR": 3, "TE": 1, "DST": 1})
-    flex: bool = True  # one extra RB / WR / TE
+    flex: bool = True
     max_per_team: int = 3
     dst_counts_for_team: bool = True
 
@@ -62,7 +59,6 @@ COLMAP = {
 
 
 def load_players(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalise a projections CSV (Daily Fantasy Tips Fanteam export format)."""
     d = df.copy()
     d.columns = [COLMAP.get(str(c).strip().lower(), str(c).strip().lower()) for c in d.columns]
     missing = [c for c in ("name", "pos", "team", "salary", "proj") if c not in d.columns]
@@ -102,7 +98,6 @@ def load_games(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def games_from_players(players: pd.DataFrame) -> pd.DataFrame:
-    """Fallback when no games file exists: one blank row per matchup found in the player file."""
     seen, rows = set(), []
     for t, o in players[["team", "opp"]].drop_duplicates().itertuples(index=False):
         if not o or (o, t) in seen:
@@ -126,14 +121,12 @@ def implied_map(games: pd.DataFrame) -> dict:
 # 2. Player model
 # --------------------------------------------------------------------------
 def add_features(players: pd.DataFrame, implied: dict, play_prob: dict | None = None) -> pd.DataFrame:
-    """Adds availability, floor (20th pct), ceiling (90th pct) and team environment."""
     d = players.copy()
     pp = {**DEFAULT_PLAY_PROB, **(play_prob or {})}
     if "proj_src" not in d.columns:
         d["proj_src"] = "source"
     d["p_play"] = d["status"].map(pp).fillna(0.9)
     d["sigma"] = d["pos"].map(SIGMA)
-    # Mean-preserving log-normal: E[x] = proj. Right-skewed, never negative.
     d["floor"] = d["proj"] * np.exp(-0.8416 * d["sigma"] - d["sigma"] ** 2 / 2)
     d["ceil"] = d["proj"] * np.exp(1.2816 * d["sigma"] - d["sigma"] ** 2 / 2)
     known = [v for v in implied.values() if not np.isnan(v)]
@@ -146,27 +139,20 @@ def add_features(players: pd.DataFrame, implied: dict, play_prob: dict | None = 
 
 
 # --------------------------------------------------------------------------
-# 3. Ownership projection + calibration (fitted on real Fanteam results)
+# 3. Ownership projection + calibration
 # --------------------------------------------------------------------------
 @dataclass
 class OwnParams:
-    """Multinomial-logit ownership model, fitted on Week 6 Fanteam results (190 players).
-
-    score = tau[pos] * sharp * (b_proj*z_proj + b_value*z_value + b_form*z_form
-                                + b_price*z_price + b_team*team_z) - penalties
-    Shares are a softmax of score within each position, scaled to that position's slot count.
-    """
-
-    sharp: float = 1.0        # global multiplier on every coefficient
-    b_proj: float = 0.49      # projection, z-scored within position
-    b_value: float = 0.48     # points per credit
-    b_form: float = 0.30      # recent Fanteam form (public chases hot players)
-    b_price: float = -0.24    # price (cheaper = more owned once value is controlled for)
-    b_team: float = 0.08      # team implied total
+    sharp: float = 1.0
+    b_proj: float = 0.49
+    b_value: float = 0.48
+    b_form: float = 0.30
+    b_price: float = -0.24
+    b_team: float = 0.08
     pen_possible: float = 0.07
     pen_unexpected: float = 2.0
-    tau_qb: float = 0.85      # quarterbacks are spread out
-    tau_rb: float = 1.25      # running backs are concentrated
+    tau_qb: float = 0.85
+    tau_rb: float = 1.25
     tau_wr: float = 1.00
     tau_te: float = 1.00
     tau_dst: float = 0.85
@@ -178,7 +164,6 @@ FEATURES = ["proj", "value", "form", "price", "team_z"]
 
 
 def _allocate(w: np.ndarray, total: float, cap: float) -> np.ndarray:
-    """Scale weights to sum to `total`, capping any player at `cap`, redistributing the excess."""
     w = np.asarray(w, float)
     own = np.zeros(len(w))
     free = np.ones(len(w), bool)
@@ -200,7 +185,6 @@ def _allocate(w: np.ndarray, total: float, cap: float) -> np.ndarray:
 
 
 def design_matrix(d: pd.DataFrame) -> pd.DataFrame:
-    """z-scored features within each position (reference group = players with a real projection)."""
     X = pd.DataFrame(0.0, index=d.index, columns=FEATURES)
     form = d["form"] if "form" in d.columns else pd.Series(np.nan, index=d.index)
     for pos, g in d.groupby("pos"):
@@ -228,7 +212,6 @@ def _scores(d: pd.DataFrame, params: OwnParams) -> pd.Series:
 
 
 def project_ownership(d: pd.DataFrame, params: OwnParams, rules: Rules) -> pd.Series:
-    """Projected ownership in percent, summing to (slots at each position) x 100."""
     score = _scores(d, params).clip(upper=8)
     own = pd.Series(0.0, index=d.index)
     for pos, g in d.groupby("pos"):
@@ -245,7 +228,6 @@ def _norm_name(s: str) -> str:
 
 
 def parse_ownership_text(text: str) -> list[tuple[str, float]]:
-    """Accepts lines like 'Josh Allen, 23.4%', 'Josh Allen<TAB>23.4', 'Josh Allen 23.4%'."""
     rows = []
     for line in text.splitlines():
         line = line.strip()
@@ -270,10 +252,6 @@ _FT_ROW = re.compile(
 
 
 def parse_fanteam_table(text: str) -> pd.DataFrame:
-    """Parse text copied from the Fanteam player table (Player, Pos, Team, Price, Own %, Form, Score).
-
-    Works before lock (no ownership or score yet) and after lock. Blank / N/A values become NaN.
-    """
     rows = []
     for line in text.replace("\t", "  ").splitlines():
         m = _FT_ROW.match(line)
@@ -300,7 +278,6 @@ _LIST_COLS = {
 
 
 def parse_player_list(data: bytes, filename: str = "") -> pd.DataFrame:
-    """Read an uploaded Fanteam player list: a CSV with headers, or text copied from the Fanteam table."""
     text = data.decode("utf-8-sig", errors="replace")
     try:
         raw = pd.read_csv(io.StringIO(text), sep=None, engine="python", dtype=str)
@@ -343,7 +320,6 @@ def _match_row(d: pd.DataFrame, name: str, pos: str, team: str, cutoff: float = 
 
 
 def match_ownership(rows: Sequence[tuple[str, float]], d: pd.DataFrame, cutoff: float = 0.84):
-    """Fuzzy-match pasted (name, %) pairs to the slate. Returns (matched DataFrame, unmatched names)."""
     keys = {_norm_name(n): n for n in d["name"]}
     matched, unmatched = [], []
     for raw, pct in rows:
@@ -361,7 +337,6 @@ def match_ownership(rows: Sequence[tuple[str, float]], d: pd.DataFrame, cutoff: 
 
 
 def fallback_projection_model(d: pd.DataFrame):
-    """Least-squares proj ~ price + form for players the source has no projection for."""
     ok = d[d["form"].notna()] if "form" in d.columns else d
     med = float(ok["form"].median()) if len(ok) else 0.0
     X = np.c_[np.ones(len(ok)), ok["salary"], ok["form"].fillna(med)]
@@ -375,10 +350,6 @@ def fallback_projection_model(d: pd.DataFrame):
 
 
 def add_unprojected(d: pd.DataFrame, price_df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """Add players that appear in a pasted Fanteam list but not in the projections file.
-
-    Their projection is estimated from price and form, status 'expected', flagged proj_src='fallback'.
-    """
     d = d.copy()
     if "proj_src" not in d.columns:
         d["proj_src"] = "source"
@@ -401,11 +372,6 @@ def add_unprojected(d: pd.DataFrame, price_df: pd.DataFrame) -> tuple[pd.DataFra
 
 
 def build_training_frame(d: pd.DataFrame, results: pd.DataFrame) -> pd.DataFrame:
-    """One row per player in a results table (Fanteam post-lock ownership + score), joined to projections.
-
-    Players missing from the projections get a price/form-based projection. Players who did not
-    play are not in the results table, so they are left out here rather than counted as 0%.
-    """
     predict = fallback_projection_model(d)
     team_z = d.drop_duplicates("team").set_index("team")["team_z"].to_dict() if "team_z" in d.columns else {}
     rows = []
@@ -422,9 +388,7 @@ def build_training_frame(d: pd.DataFrame, results: pd.DataFrame) -> pd.DataFrame
 
 
 def load_history(folder) -> list[pd.DataFrame]:
-    """Training files saved from earlier weeks (data/history/*_training.csv)."""
     from pathlib import Path
-
     frames = []
     for f in sorted(Path(folder).glob("*_training.csv")):
         t = pd.read_csv(f)
@@ -448,14 +412,7 @@ def evaluate_ownership(frames: Sequence[pd.DataFrame], params: OwnParams, rules:
 
 def fit_ownership(frames: Sequence[pd.DataFrame], rules: Rules, prior: OwnParams | None = None,
                   prior_weight: float = 0.02) -> tuple[OwnParams, dict, dict]:
-    """Fit ownership coefficients on one or more weeks of real results.
-
-    Maximises the multinomial-logit likelihood of each position's ownership shares, with a pull
-    toward `prior` (prior_weight / number of weeks) so a single odd week cannot swing the model.
-    Returns (fitted params, error before, error after).
-    """
     from scipy.optimize import minimize
-
     prior = prior or OwnParams()
     theta0 = np.array([getattr(prior, k) for k in FIT_FIELDS], float)
     prepared = []
@@ -535,11 +492,6 @@ _PULP_BROKEN = False
 
 
 def _solve_binary(obj: np.ndarray, cons: list, n: int) -> list[int] | None:
-    """Maximise obj.x s.t. cons, x binary. cons = [(coef_dict, lo, hi)].
-
-    Uses PuLP (CBC). If the installed PuLP version has an incompatible API or is missing,
-    falls back to SciPy's MILP solver (HiGHS), which gives the same answers.
-    """
     global _PULP_BROKEN
     if not _PULP_BROKEN:
         try:
@@ -550,14 +502,14 @@ def _solve_binary(obj: np.ndarray, cons: list, n: int) -> list[int] | None:
 
 
 class LineupOptimizer:
-    """Holds the structural constraints for one build; re-solved with different objectives."""
-
     def __init__(self, pool: pd.DataFrame, rules: Rules, *, locks: Iterable[str] = (),
                  qb_allowed: Iterable[str] | None = None, stack_min: int = 0, stack_rb: bool = False,
                  bring_back: int = 0, bring_back_rb: bool = True, dst_vs_offense: bool = True,
                  max_leftover: float | None = None, own_sum_cap: float | None = None,
                  max_chalk: int | None = None, chalk_thr: float = 25.0,
-                 low_min: int = 0, low_thr: float = 10.0):
+                 low_min: int = 0, low_thr: float = 10.0,
+                 no_qb_dst_stack: bool = True, max_bring_back: int | None = 1,
+                 limit_unstacked_teams: bool = False, max_rb_per_team: int | None = 1):
         self.pool = pool.reset_index(drop=True)
         self.rules = rules
         self.n = len(self.pool)
@@ -613,6 +565,44 @@ class LineupOptimizer:
         if low_min > 0:
             add(({i: 1 for i in range(self.n) if own[i] < low_thr}, low_min, None))
 
+        # --- NEW STRUCTURAL RULES ---
+        if no_qb_dst_stack:
+            for t in p.team.unique():
+                qbs_t = [i for i in ids["QB"] if p.team[i] == t]
+                dsts_t = [i for i in ids["DST"] if p.team[i] == t]
+                if qbs_t and dsts_t:
+                    for q in qbs_t:
+                        for d in dsts_t:
+                            add(({q: 1, d: 1}, None, 1))
+
+        if max_bring_back is not None:
+            for q in ids["QB"]:
+                foes = [i for i in range(self.n) if p.team[i] == p.opp[q] and p.pos[i] in FLEX_POS]
+                if foes:
+                    coefs = {i: 1 for i in foes}
+                    coefs[q] = 8
+                    add((coefs, None, 8 + max_bring_back))
+
+        if limit_unstacked_teams:
+            for t in p.team.unique():
+                offense = [i for i in range(self.n) if p.team[i] == t and p.pos[i] in FLEX_POS]
+                qbs_t = [i for i in ids["QB"] if p.team[i] == t]
+                qbs_opp = [i for i in ids["QB"] if p.opp[i] == t]
+                if offense:
+                    coefs = {i: 1 for i in offense}
+                    for q in qbs_t:
+                        coefs[q] = -4  # Max allowed rises to 5 if your QB is from this team
+                    for q in qbs_opp:
+                        mb = max_bring_back if max_bring_back is not None else 1
+                        coefs[q] = -(mb - 1)  # Max allowed scales to max_bring_back if opponent QB is yours
+                    add((coefs, None, 1))
+
+        if max_rb_per_team is not None:
+            for t in p.team.unique():
+                rbs = [i for i in ids["RB"] if p.team[i] == t]
+                if len(rbs) > max_rb_per_team:
+                    add(({i: 1 for i in rbs}, None, max_rb_per_team))
+
     def solve(self, obj: np.ndarray, extra: Sequence = ()) -> list[int] | None:
         return _solve_binary(np.asarray(obj, float), self.cons + list(extra), self.n)
 
@@ -640,7 +630,6 @@ class LineupOptimizer:
 # --------------------------------------------------------------------------
 # 5. Simulation + field model
 # --------------------------------------------------------------------------
-# loadings: (own pass env, own rush env, game env, opp pass env, opp rush env)
 LOADINGS = {
     "QB": (0.55, 0.05, 0.25, 0.0, 0.0),
     "WR": (0.45, 0.00, 0.20, 0.0, 0.0),
@@ -651,7 +640,6 @@ LOADINGS = {
 
 
 def simulate_scores(pool: pd.DataFrame, n_sims: int = 2000, seed: int = 7) -> np.ndarray:
-    """(players x sims) correlated fantasy scores: shared team passing/rushing and game environments."""
     rng = np.random.default_rng(seed)
     teams = sorted(set(pool.team) | (set(pool.opp) - {""}))
     t_idx = {t: k for k, t in enumerate(teams)}
@@ -678,12 +666,6 @@ def simulate_scores(pool: pd.DataFrame, n_sims: int = 2000, seed: int = 7) -> np
 
 def sample_field(pool: pd.DataFrame, own_pct: np.ndarray, rules: Rules, n_field: int = 1500,
                  seed: int = 11, min_spend_frac: float = 0.92, keep: float = 1.0) -> list[list[int]]:
-    """Ownership-weighted random lineups that respect budget and team limits (a stand-in for the field).
-
-    Vectorised: weighted sampling without replacement via Gumbel top-k, in batches. `keep` < 1 keeps only
-    that share of the sampled lineups, the ones with the highest total projection, because real entrants
-    optimise rather than pick at random.
-    """
     rng = np.random.default_rng(seed)
     frac = np.clip(np.asarray(own_pct, float), 0.01, None) / 100.0
     logw = np.log(frac)
@@ -739,7 +721,6 @@ def _indicator(lineups: Sequence[Sequence[int]], n: int) -> np.ndarray:
 
 
 LADDERS = {
-    # (top fraction of field, relative payout) - normalised so the field returns (1 - rake) of entry fees
     "Top-heavy (large field)": [(0.001, 150), (0.005, 50), (0.01, 25), (0.02, 12), (0.05, 5), (0.10, 2.5), (0.20, 1.5)],
     "Balanced (mid-size field)": [(0.01, 40), (0.03, 15), (0.07, 6), (0.15, 3), (0.25, 1.8)],
     "Flat (small field)": [(0.05, 8), (0.15, 3), (0.30, 1.8)],
@@ -747,7 +728,6 @@ LADDERS = {
 
 
 def payout_tiers(kind: str, rake: float = 0.12) -> tuple[np.ndarray, np.ndarray]:
-    """(top fractions, payout as a multiple of the entry fee). A stand-in for the real prize structure."""
     ladder = LADDERS[kind]
     fr = np.array([f for f, _ in ladder], float)
     m = np.array([x for _, x in ladder], float)
@@ -757,19 +737,15 @@ def payout_tiers(kind: str, rake: float = 0.12) -> tuple[np.ndarray, np.ndarray]
 
 def evaluate_lineups(lineups: Sequence[Sequence[int]], X: np.ndarray, field: Sequence[Sequence[int]],
                      ladder: tuple[np.ndarray, np.ndarray] | None = None) -> pd.DataFrame:
-    """Win-probability style metrics versus the simulated field, simulation by simulation.
-
-    With a payout ladder it also returns `ev`: expected return as a multiple of the entry fee.
-    """
     n = X.shape[0]
     S = _indicator(lineups, n) @ X
-    if len(field) < 50:  # field sampler failed - fall back to the lineups themselves
+    if len(field) < 50:
         F = S
     else:
         F = _indicator(field, n) @ X
     t55, t90, t99 = (np.percentile(F, q, axis=0) for q in (55, 90, 99))
     out = pd.DataFrame({
-        "p_cash": (S >= t55).mean(1),   # beats ~55% of field (double-up style)
+        "p_cash": (S >= t55).mean(1),
         "p_top10": (S >= t90).mean(1),
         "p_top1": (S >= t99).mean(1),
         "sim_mean": S.mean(1),
@@ -778,7 +754,7 @@ def evaluate_lineups(lineups: Sequence[Sequence[int]], X: np.ndarray, field: Seq
     if ladder is not None:
         fr, mult = ladder
         pay = np.zeros_like(S)
-        for j in reversed(range(len(fr))):  # loosest tier first so stricter tiers overwrite it
+        for j in reversed(range(len(fr))):
             pay = np.where(S >= np.percentile(F, 100 * (1 - fr[j]), axis=0)[None, :], mult[j], pay)
         out["ev"] = pay.mean(1)
     return out
@@ -813,22 +789,29 @@ def default_cfg(mode: str) -> dict:
         "use_sim": False, "pool_size": 60, "uniq_w": 0.0, "max_chalk": None, "chalk_thr": 25.0, "low_min": 0,
         "low_thr": 10.0, "own_cap_pct": None, "max_leftover": None, "locks": [], "qb_allowed": [],
         "n_sims": 2000, "n_field": 1500, "seed": 1, "candidates": 120, "max_qbs": 8, "qb_max_exposure": 0.4,
-        "ladder": "Top-heavy (large field)",
-        "field_keep": 1.0, "risky_max_exposure": 0.35,
+        "ladder": "Top-heavy (large field)", "field_keep": 1.0, "risky_max_exposure": 0.35,
+        "limit_unstacked_teams": False, "no_qb_dst_stack": True, "max_rb_per_team": 1,
+        "max_bring_back": 1, "qb_rb_multiplier": 1.0, "rb_dst_multiplier": 1.0, "te_flex_multiplier": 1.0
     }
     presets = {
         "Cash": {"n": 3, "rand": 0.03, "floor_w": 0.5, "min_unique": 2},
         "GPP": {"n": 20, "rand": 0.12, "upside_w": 0.7, "lev": 0.35, "stack_min": 1, "bring_back": 1,
-                "pct_opt": 0.93, "use_sim": True, "max_exposure": 0.6, "min_unique": 2},
+                "pct_opt": 0.93, "use_sim": True, "max_exposure": 0.6, "min_unique": 2,
+                "limit_unstacked_teams": False, "qb_rb_multiplier": 0.85, "rb_dst_multiplier": 1.15, "te_flex_multiplier": 0.90},
         "Contrarian": {"n": 20, "rand": 0.18, "upside_w": 0.8, "lev": 0.5, "stack_min": 1, "bring_back": 1,
                        "pct_opt": 0.95, "use_sim": True, "uniq_w": 0.5, "max_exposure": 0.4, "min_unique": 3,
                        "max_chalk": 2, "chalk_thr": 22.0, "low_min": 2, "low_thr": 8.0, "own_cap_pct": 85.0,
-                       "pool_size": 60},
+                       "pool_size": 60, "limit_unstacked_teams": False, "qb_rb_multiplier": 0.85, 
+                       "rb_dst_multiplier": 1.15, "te_flex_multiplier": 0.90},
         "Pure projection": {"n": 3, "min_unique": 1},
         "Auto": {"n": 20, "rand": 0.10, "pct_opt": 0.90, "uniq_w": 0.35, "max_exposure": 0.5, "min_unique": 3,
                  "use_sim": True, "n_sims": 3000, "n_field": 2000, "candidates": 120, "max_qbs": 8,
                  "qb_max_exposure": 0.4, "ladder": "Top-heavy (large field)", "field_keep": 0.5,
-                 "risky_max_exposure": 0.35},
+                 "risky_max_exposure": 0.35, 
+                 # Advanced smart rules pre-configured for Auto:
+                 "limit_unstacked_teams": True, "no_qb_dst_stack": True, "max_rb_per_team": 1,
+                 "max_bring_back": 1, "qb_rb_multiplier": 0.85, "rb_dst_multiplier": 1.15,
+                 "te_flex_multiplier": 0.90},
     }
     base.update(presets[mode])
     return base
@@ -848,22 +831,25 @@ def objective_vector(pool: pd.DataFrame, cfg: dict) -> np.ndarray:
 
 def build_lineups(pool: pd.DataFrame, rules: Rules, cfg: dict, field_baseline: float | None = None,
                   progress=None) -> dict:
-    """pool must contain: name,pos,team,opp,salary,proj,floor,ceil,p_play,sigma,own (percent)."""
     if cfg["mode"] == "Auto":
         return auto_portfolio(pool, rules, cfg, progress)
     pool = pool.reset_index(drop=True)
     notes: list[str] = []
     field_l = sample_field(pool, pool.own.to_numpy(), rules, cfg["n_field"], seed=cfg["seed"] + 200)
-    if len(field_l) >= 50:  # typical own-sum of a field lineup, measured from the simulated field
+    if len(field_l) >= 50:
         field_baseline = float(np.mean([pool.own.to_numpy()[L].sum() for L in field_l]))
     elif field_baseline is None:
         field_baseline = float((pool.own / 100 * pool.own).sum())
     own_cap = field_baseline * cfg["own_cap_pct"] / 100.0 if cfg.get("own_cap_pct") else None
+    
     opt = LineupOptimizer(
         pool, rules, locks=cfg["locks"], qb_allowed=cfg["qb_allowed"], stack_min=cfg["stack_min"],
         stack_rb=cfg["stack_rb"], bring_back=cfg["bring_back"], dst_vs_offense=cfg["dst_vs_offense"],
         max_leftover=cfg["max_leftover"], own_sum_cap=own_cap, max_chalk=cfg["max_chalk"],
-        chalk_thr=cfg["chalk_thr"], low_min=cfg["low_min"], low_thr=cfg["low_thr"])
+        chalk_thr=cfg["chalk_thr"], low_min=cfg["low_min"], low_thr=cfg["low_thr"],
+        no_qb_dst_stack=cfg.get("no_qb_dst_stack", True), max_bring_back=cfg.get("max_bring_back", 1),
+        limit_unstacked_teams=cfg.get("limit_unstacked_teams", False), max_rb_per_team=cfg.get("max_rb_per_team", 1)
+    )
     proj_adj = pool.proj.to_numpy() * pool.p_play.to_numpy()
     best = opt.solve(proj_adj)
     if best is None:
@@ -889,7 +875,31 @@ def build_lineups(pool: pd.DataFrame, rules: Rules, cfg: dict, field_baseline: f
         ev = evaluate_lineups(cand, X, field_l)
         own_sum = np.array([pool.own.to_numpy()[L].sum() for L in cand])
         metric = ev["p_top1"].to_numpy() * (field_baseline / np.clip(own_sum, 1, None)) ** cfg["uniq_w"]
-        metric = metric + 0.01 * ev["p_top10"].to_numpy()  # tie-break toward higher top-10% odds
+        metric = metric + 0.01 * ev["p_top10"].to_numpy() 
+
+        # Apply Structural Ranking Multipliers to GPP builds too
+        qb_rb_mult = cfg.get("qb_rb_multiplier", 1.0)
+        rb_dst_mult = cfg.get("rb_dst_multiplier", 1.0)
+        te_flex_mult = cfg.get("te_flex_multiplier", 1.0)
+
+        for j, L in enumerate(cand):
+            mult = 1.0
+            pos_arr = pool.pos.to_numpy()[L]
+            teams_arr = pool.team.to_numpy()[L]
+
+            if np.sum(pos_arr == "TE") > 1:
+                mult *= te_flex_mult
+            
+            qb_idx = np.where(pos_arr == "QB")[0]
+            if len(qb_idx) > 0 and np.any((pos_arr == "RB") & (teams_arr == teams_arr[qb_idx[0]])):
+                mult *= qb_rb_mult
+            
+            dst_idx = np.where(pos_arr == "DST")[0]
+            if len(dst_idx) > 0 and np.any((pos_arr == "RB") & (teams_arr == teams_arr[dst_idx[0]])):
+                mult *= rb_dst_mult
+            
+            metric[j] *= mult
+
         chosen = select_from_pool(cand, metric, n, cfg["min_unique"], cfg["max_exposure"], rules.roster_size, len(pool))
         notes.append(f"Ranked {len(cand)} candidate lineups by simulated top-1% odds against a "
                      f"{len(field_l)}-lineup ownership-weighted field.")
@@ -907,7 +917,6 @@ def build_lineups(pool: pd.DataFrame, rules: Rules, cfg: dict, field_baseline: f
 
 
 def order_slots(pool: pd.DataFrame, idxs: Sequence[int], rules: Rules) -> list[tuple[str, int]]:
-    """Names each player's slot: QB, RB1.., WR1.., TE, FLEX, DST."""
     out: list[tuple[str, int]] = []
     extra: list[int] = []
     for pos in POS_ORDER:
@@ -917,7 +926,7 @@ def order_slots(pool: pd.DataFrame, idxs: Sequence[int], rules: Rules) -> list[t
             out.append((pos if k == 1 else f"{pos}{j + 1}", i))
         extra += members[k:]
     if extra:
-        out.insert(len(out) - 1, ("FLEX", extra[0]))  # keep DST last
+        out.insert(len(out) - 1, ("FLEX", extra[0]))
     return out
 
 
@@ -946,7 +955,6 @@ def lineup_metrics(pool: pd.DataFrame, idxs: Sequence[int], budget: float) -> di
 
 
 def lineups_to_frame(result: dict, rules: Rules) -> pd.DataFrame:
-    """Wide export: one row per lineup with names + Fanteam IDs in slot order."""
     pool = result["pool"]
     rows = []
     for k, L in enumerate(result["lineups"], 1):
@@ -974,7 +982,6 @@ def exposure_table(result: dict) -> pd.DataFrame:
 # 7. Auto tournament portfolio
 # --------------------------------------------------------------------------
 def auto_candidates(pool: pd.DataFrame, rules: Rules, cfg: dict, progress=None) -> list[list[int]]:
-    """Diversified candidate lineups: every viable QB x stack shape x leverage x upside setting, noised."""
     rng = np.random.default_rng(cfg["seed"])
     n = len(pool)
     p = pool.p_play.to_numpy()
@@ -988,9 +995,14 @@ def auto_candidates(pool: pd.DataFrame, rules: Rules, cfg: dict, progress=None) 
         keep = [i for i in qb_all if pool.name[i] in set(cfg["qb_allowed"])]
         qb_ok = keep or qb_ok
     variants = [(1, 0), (1, 1), (2, 1)]
-    opts = {v: LineupOptimizer(pool, rules, locks=cfg["locks"], stack_min=v[0], bring_back=v[1],
-                               dst_vs_offense=cfg["dst_vs_offense"], max_leftover=cfg["max_leftover"])
-            for v in variants}
+    
+    opts = {v: LineupOptimizer(
+        pool, rules, locks=cfg["locks"], stack_min=v[0], bring_back=v[1], dst_vs_offense=cfg["dst_vs_offense"],
+        max_leftover=cfg["max_leftover"], no_qb_dst_stack=cfg.get("no_qb_dst_stack", True),
+        max_bring_back=cfg.get("max_bring_back", 1), limit_unstacked_teams=cfg.get("limit_unstacked_teams", True),
+        max_rb_per_team=cfg.get("max_rb_per_team", 1)
+    ) for v in variants}
+    
     best = opts[(1, 1)].solve(proj_adj) or opts[(1, 0)].solve(proj_adj)
     if best is None:
         raise ValueError("No valid lineup exists with these settings. Loosen locks or the team cap.")
@@ -1014,7 +1026,7 @@ def auto_candidates(pool: pd.DataFrame, rules: Rules, cfg: dict, progress=None) 
         obj = ((1 - up) * proj + up * ceil_) * p * (1 - lev * own) * (1 + rng.uniform(-cfg["rand"], cfg["rand"], n))
         found: list[list[int]] = []
         rotate: list[int] = []
-        if len(cands) >= 15 and rng.random() < 0.6:  # rotate the core: ban a couple of the most-used players
+        if len(cands) >= 15 and rng.random() < 0.6:
             usage = np.bincount(np.concatenate(cands), minlength=n)
             top = [int(i) for i in np.argsort(-usage)[:6] if i != q]
             rotate = [int(i) for i in rng.choice(top, size=min(2, len(top)), replace=False)]
@@ -1037,7 +1049,6 @@ def auto_candidates(pool: pd.DataFrame, rules: Rules, cfg: dict, progress=None) 
 def select_portfolio(cands: list[list[int]], value: np.ndarray, qb_of: np.ndarray, n: int, min_unique: int,
                      max_exposure: float, qb_max_exposure: float, roster_size: int, n_players: int,
                      risky: np.ndarray | None = None, risky_max_exposure: float = 1.0):
-    """Greedy: best value first, subject to player / QB / uncertain-player exposure caps and uniqueness."""
     order = np.argsort(-value)
     risky = np.zeros(n_players, bool) if risky is None else risky
     for relax in (1.0, 1.25, 1.5):
@@ -1064,7 +1075,6 @@ def select_portfolio(cands: list[list[int]], value: np.ndarray, qb_of: np.ndarra
 
 
 def auto_portfolio(pool: pd.DataFrame, rules: Rules, cfg: dict, progress=None) -> dict:
-    """One-click tournament build: diversified candidates -> simulated payout vs the field -> exposure-capped portfolio."""
     pool = pool.reset_index(drop=True)
     notes: list[str] = []
     own = pool.own.to_numpy()
@@ -1080,6 +1090,36 @@ def auto_portfolio(pool: pd.DataFrame, rules: Rules, cfg: dict, progress=None) -
     ev = evaluate_lineups(cands, X, field_l, ladder)
     own_sum = np.array([own[L].sum() for L in cands])
     value = ev["ev"].to_numpy() * (baseline / np.clip(own_sum, 1, None)) ** cfg["uniq_w"]
+    
+    # Apply Structural Ranking Multipliers
+    qb_rb_mult = cfg.get("qb_rb_multiplier", 0.85)
+    rb_dst_mult = cfg.get("rb_dst_multiplier", 1.15)
+    te_flex_mult = cfg.get("te_flex_multiplier", 0.90)
+
+    for j, L in enumerate(cands):
+        mult = 1.0
+        pos_arr = pool.pos.to_numpy()[L]
+        teams_arr = pool.team.to_numpy()[L]
+
+        # Penalize TE in Flex (2+ TEs)
+        if np.sum(pos_arr == "TE") > 1:
+            mult *= te_flex_mult
+
+        # Check for QB and DST stacks
+        qb_idx = np.where(pos_arr == "QB")[0]
+        if len(qb_idx) > 0:
+            qb_t = teams_arr[qb_idx[0]]
+            if np.any((pos_arr == "RB") & (teams_arr == qb_t)):
+                mult *= qb_rb_mult
+
+        dst_idx = np.where(pos_arr == "DST")[0]
+        if len(dst_idx) > 0:
+            dst_t = teams_arr[dst_idx[0]]
+            if np.any((pos_arr == "RB") & (teams_arr == dst_t)):
+                mult *= rb_dst_mult
+
+        value[j] *= mult
+
     qb_of = np.array([next(i for i in L if pool.pos[i] == "QB") for L in cands])
     n = int(cfg["n"])
     picked, relax = select_portfolio(cands, value, qb_of, n, cfg["min_unique"], cfg["max_exposure"],
@@ -1114,12 +1154,10 @@ def auto_portfolio(pool: pd.DataFrame, rules: Rules, cfg: dict, progress=None) -
 # 8. Fanteam lineup upload file
 # --------------------------------------------------------------------------
 def upload_csv_text(rows: Sequence[Sequence]) -> str:
-    """Fanteam upload layout: no header, one lineup per line, LF line endings, no trailing newline."""
     return "\n".join(",".join(str(v) for v in r) for r in rows)
 
 
 def fanteam_upload(result: dict, rules: Rules, contest_id: str) -> tuple[str, list[str]]:
-    """(csv text, names missing a Fanteam ID). Row = contest id, then player ids in slot order."""
     pool = result["pool"]
     rows, missing = [], []
     for L in result["lineups"]:
