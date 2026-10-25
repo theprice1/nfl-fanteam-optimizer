@@ -120,6 +120,8 @@ def lineup_card(n: int, slots: list[tuple[str, dict]], stats: dict) -> str:
             f'<div class="num">{p["salary"]:.1f}</div><div class="num">{p["proj"]:.1f}</div>'
             f'<div class="{own_cls}">{p["own"]:.0f}%</div></div>'
         )
+    ev = stats.get("ev")
+    ev_html = f'<span class="lc-stat">Payout idx <b>{ev:.1f}</b></span>' if ev is not None and ev == ev else ""
     head = (
         f'<div class="lc-head"><span class="lc-title">Lineup {n}</span>'
         f'<span class="lc-stat">Proj <b>{stats["proj"]:.1f}</b></span>'
@@ -127,6 +129,7 @@ def lineup_card(n: int, slots: list[tuple[str, dict]], stats: dict) -> str:
         f'<span class="lc-stat">Own sum <b>{stats["own_sum"]:.0f}%</b></span>'
         f'<span class="lc-stat">Top 1% <b>{stats["p_top1"] * 100:.1f}%</b></span>'
         f'<span class="lc-stat">Cash <b>{stats["p_cash"] * 100:.0f}%</b></span>'
+        f'{ev_html}'
         f'<span class="lc-stack">{html.escape(stats["stack"])}</span></div>'
     )
     return f'<div class="lc">{head}{"".join(rows)}</div>'

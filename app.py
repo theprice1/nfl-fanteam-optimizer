@@ -27,6 +27,8 @@ inject_css()
 DATA = Path(__file__).parent / "data"
 POS_RANK = {p: i for i, p in enumerate(E.POS_ORDER)}
 MODE_HELP = {
+    "Auto": "One click for the tournament. Tests every viable quarterback, stack shape and leverage level, scores each "
+            "candidate against a simulated field with a prize curve, and keeps the best set within your exposure limits.",
     "Cash": "Floor-weighted projection, no ownership penalty. For head-to-heads, 50/50s and double-ups.",
     "GPP": "Ceiling-weighted with a QB stack and bring-back, a mild ownership penalty, and lineups ranked by "
            "simulated top-1% odds against a field built from the ownership projection.",
@@ -363,19 +365,38 @@ with tab_own:
 # Build tab
 # ----------------------------------------------------------------------------
 with tab_build:
-    mode = st.radio("Lineup type", ["Cash", "GPP", "Contrarian", "Pure projection"], horizontal=True, key="mode")
+    mode = st.radio("Lineup type", ["Auto", "Cash", "GPP", "Contrarian", "Pure projection"], horizontal=True, key="mode")
     st.caption(MODE_HELP[mode])
     k = mode.lower().replace(" ", "_")
     cfg = E.default_cfg(mode)
     names_sorted = feat.sort_values("proj", ascending=False)["name"].tolist()
     qbs = feat[feat.pos == "QB"].sort_values("proj", ascending=False)["name"].tolist()
 
-    a, b, c = st.columns(3)
-    cfg["n"] = int(a.number_input("Lineups", 1, 150, cfg["n"], 1, key=f"{k}_n"))
-    cfg["min_unique"] = int(b.number_input("Min different players between lineups", 1, 6, cfg["min_unique"], 1,
-                                           key=f"{k}_uniq"))
-    cfg["max_exposure"] = float(c.slider("Max exposure per player", 0.1, 1.0, float(cfg["max_exposure"]), 0.05,
-                                         key=f"{k}_exp"))
+    if mode == "Auto":
+        a, b, c = st.columns(3)
+        cfg["n"] = int(a.number_input("Lineups to build", 1, 150, cfg["n"], 1, key=f"{k}_n"))
+        cfg["ladder"] = b.selectbox("Contest size", list(E.LADDERS), key=f"{k}_ladder",
+                                    help="Sets how top-heavy the prize curve is. Bigger fields reward upside more.")
+        depth = c.select_slider("Search depth", ["Fast", "Standard", "Deep"], "Standard", key=f"{k}_depth",
+                                help="How many candidate lineups are tested. Deep takes the longest.")
+        cfg["candidates"] = {"Fast": 60, "Standard": 120, "Deep": 240}[depth]
+        a, b, c = st.columns(3)
+        cfg["max_exposure"] = float(a.slider("Max exposure per player", 0.1, 1.0, float(cfg["max_exposure"]), 0.05,
+                                             key=f"{k}_exp"))
+        cfg["qb_max_exposure"] = float(b.slider("Max exposure per quarterback", 0.1, 1.0,
+                                                float(cfg["qb_max_exposure"]), 0.05, key=f"{k}_qbexp"))
+        cfg["risky_max_exposure"] = float(c.slider("Max exposure, uncertain players", 0.05, 1.0,
+                                                   float(cfg["risky_max_exposure"]), 0.05, key=f"{k}_rexp",
+                                                   help="Players marked possible or unexpected"))
+        cfg["min_unique"] = int(st.number_input("Min different players between lineups", 1, 6, cfg["min_unique"], 1,
+                                                key=f"{k}_uniq"))
+    else:
+        a, b, c = st.columns(3)
+        cfg["n"] = int(a.number_input("Lineups", 1, 150, cfg["n"], 1, key=f"{k}_n"))
+        cfg["min_unique"] = int(b.number_input("Min different players between lineups", 1, 6, cfg["min_unique"], 1,
+                                               key=f"{k}_uniq"))
+        cfg["max_exposure"] = float(c.slider("Max exposure per player", 0.1, 1.0, float(cfg["max_exposure"]), 0.05,
+                                             key=f"{k}_exp"))
 
     if mode == "Cash":
         cfg["floor_w"] = st.slider("Floor weight (0 = projection only, 1 = floor only)", 0.0, 1.0,
@@ -426,10 +447,10 @@ with tab_build:
         if a.toggle("Limit unspent credits", False, key=f"{k}_lo"):
             cfg["max_leftover"] = float(b.slider("Max credits left", 0.0, 10.0, 2.0, 0.5, key=f"{k}_lov"))
         a, b = st.columns(2)
-        cfg["n_sims"] = int(a.select_slider("Simulations", [1000, 2000, 4000], 2000, key=f"{k}_nsim"))
+        cfg["n_sims"] = int(a.select_slider("Simulations", [1000, 2000, 3000, 4000], cfg["n_sims"], key=f"{k}_nsim"))
         cfg["seed"] = int(b.number_input("Random seed", 0, 9999, 1, 1, key=f"{k}_seed"))
 
-    if st.button(f"Build {mode} lineups", type="primary", key=f"{k}_run"):
+    if st.button("Build tournament lineups" if mode == "Auto" else f"Build {mode} lineups", type="primary", key=f"{k}_run"):
         pool = feat.copy()
         if drop_unx:
             pool = pool[pool.status != "unexpected"]
@@ -454,9 +475,18 @@ with tab_build:
         m = st.columns(5)
         m[0].metric("Lineups", len(stats))
         m[1].metric("Avg projection", f"{stats.proj.mean():.1f}")
-        m[2].metric("Avg ownership sum", f"{stats.own_sum.mean():.0f}%")
-        m[3].metric("Best top-1% odds", f"{stats.p_top1.max() * 100:.1f}%")
-        m[4].metric("Avg cash odds", f"{stats.p_cash.mean() * 100:.0f}%")
+        if "portfolio" in res:
+            pf = res["portfolio"]
+            m[2].metric("Payout index", f"{pf['expected_return']:.1f}",
+                        help="Average simulated payout per lineup against the simulated field, in entry fees. "
+                             "Use it to compare lineups and settings, not as a forecast: the simulated field is weaker "
+                             "than a real one.")
+            m[3].metric("Any lineup top 1%", f"{pf['p_any_top1'] * 100:.0f}%")
+            m[4].metric("Any lineup top 10%", f"{pf['p_any_top10'] * 100:.0f}%")
+        else:
+            m[2].metric("Avg ownership sum", f"{stats.own_sum.mean():.0f}%")
+            m[3].metric("Best top-1% odds", f"{stats.p_top1.max() * 100:.1f}%")
+            m[4].metric("Avg cash odds", f"{stats.p_cash.mean() * 100:.0f}%")
         for note in res["notes"]:
             st.caption(note)
         ex = E.exposure_table(res)
@@ -490,6 +520,8 @@ with tab_build:
                 "p_top1": st.column_config.ProgressColumn("Top 1% odds", min_value=0.0, max_value=30.0, format="%.1f"),
                 "sim_mean": st.column_config.NumberColumn("Sim mean", format="%.1f"),
                 "sim_p90": st.column_config.NumberColumn("Sim 90th", format="%.1f"),
+                "ev": st.column_config.NumberColumn("Payout index", format="%.2f"),
+                "adj_ev": st.column_config.NumberColumn("Ranking score", format="%.2f"),
             })
         with v3:
             st.dataframe(ex, hide_index=True, column_config={
@@ -497,6 +529,11 @@ with tab_build:
                 "own": st.column_config.NumberColumn("Field own %", format="%.1f"),
                 "leverage": st.column_config.NumberColumn("Leverage", format="%+.1f", help="Exposure minus field ownership"),
             })
+        if "portfolio" in res:
+            qb_names = pd.Series([pool.at[next(i for i in L if pool.at[i, "pos"] == "QB"), "name"] for L in res["lineups"]])
+            st.markdown("##### Quarterback mix")
+            st.dataframe(qb_names.value_counts().rename("lineups").reset_index().rename(columns={"index": "QB", "name": "QB"}),
+                         hide_index=True)
         d1, d2 = st.columns(2)
         d1.download_button("Download lineups (CSV)", E.lineups_to_frame(res, rl).to_csv(index=False),
                            file_name=f"{slate_name.replace(' ', '_').lower()}_{k}_lineups.csv", mime="text/csv")
