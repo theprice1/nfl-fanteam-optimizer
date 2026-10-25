@@ -60,7 +60,7 @@ def cb_fetch() -> None:
         st.session_state["fetched"] = {k: res[k] for k in ("players", "games", "week", "updated")}
         st.session_state["fetch_msg"] = (f"Fetched week {res['week']} (page updated {res['updated']}): "
                                          f"{len(res['players'])} players, {len(res['games'])} games.")
-    except Exception as exc:  # network or page-layout problem: show it, keep the app running
+    except (OSError, ValueError, RuntimeError, KeyError) as exc:  # network or page-layout problem: show it
         st.session_state["fetch_msg"] = f"Fetch failed: {exc}"
 
 
@@ -167,7 +167,9 @@ with st.sidebar:
     with st.expander("Fanteam player list (optional)", expanded=False):
         st.caption("Paste the Fanteam player table. Players missing from the projections are added with a "
                    "price-and-form estimate, so cheap plays the source skipped are not lost.")
-        st.text_area("Fanteam table", key="price_text", height=110, label_visibility="collapsed")
+        pl_up = st.file_uploader("Fanteam player list file", type=["csv", "txt"], key="pl_up",
+                                 help="A CSV from Fanteam, or text saved from the player table")
+        st.text_area("Or paste the table", key="price_text", height=90)
 
     with st.expander("Contest rules", expanded=False):
         st.caption("Check these against the Fanteam lobby each week.")
@@ -233,7 +235,10 @@ except ValueError as exc:
     st.stop()
 
 added_players: list[str] = []
-price_df = E.parse_fanteam_table(st.session_state.get("price_text", ""))
+if pl_up is not None:
+    price_df = E.parse_player_list(pl_up.getvalue(), pl_up.name)
+else:
+    price_df = E.parse_fanteam_table(st.session_state.get("price_text", ""))
 if len(price_df):
     players, added_players = E.add_unprojected(players, price_df)
 
@@ -534,6 +539,19 @@ with tab_build:
             st.markdown("##### Quarterback mix")
             st.dataframe(qb_names.value_counts().rename("lineups").reset_index().rename(columns={"index": "QB", "name": "QB"}),
                          hide_index=True)
+        st.markdown("##### Upload file for Fanteam")
+        contest_id = st.text_input("Fanteam contest ID", key="contest_id",
+                                   help="The number in the first column of a Fanteam upload file for this contest")
+        cid = re.sub(r"\D", "", contest_id or "")
+        if cid:
+            up_text, no_id = E.fanteam_upload(res, rl, cid)
+            if no_id:
+                st.warning("No Fanteam ID for: " + ", ".join(no_id) + ". Load a Fanteam player list that includes IDs "
+                           "(sidebar) or upload the projections CSV, then rebuild.")
+            st.download_button("Download Fanteam upload (CSV)", up_text, file_name=f"fanteam_nfl_upload_{cid}.csv",
+                               mime="text/csv", disabled=bool(no_id))
+        else:
+            st.caption("Enter the contest ID to enable the Fanteam upload file.")
         d1, d2 = st.columns(2)
         d1.download_button("Download lineups (CSV)", E.lineups_to_frame(res, rl).to_csv(index=False),
                            file_name=f"{slate_name.replace(' ', '_').lower()}_{k}_lineups.csv", mime="text/csv")

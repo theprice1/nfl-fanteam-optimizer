@@ -12,6 +12,7 @@ Sections
 from __future__ import annotations
 
 import difflib
+import io
 import itertools
 import math
 import re
@@ -260,6 +261,8 @@ def parse_ownership_text(text: str) -> list[tuple[str, float]]:
     return rows
 
 
+PLAYER_LIST_COLS = ["name", "pos", "team", "price", "own_pct", "form", "score", "fid"]
+
 _FT_ROW = re.compile(
     r"^\s*(?P<name>.+?)\s+(?P<pos>QB|RB|WR|TE|DST)\s+(?P<team>[A-Z]{2,3})\s+(?P<price>\d+(?:\.\d+)?)\s*M\s*"
     r"(?:(?P<own>\d+(?:\.\d+)?)\s*%|N/?A)?\s*(?:(?P<form>-?\d+(?:\.\d+)?)|N/?A)?\s*(?P<score>-?\d+(?:\.\d+)?)?\s*$",
@@ -283,8 +286,46 @@ def parse_fanteam_table(text: str) -> pd.DataFrame:
             "own_pct": float(g["own"]) if g["own"] else np.nan,
             "form": float(g["form"]) if g["form"] else np.nan,
             "score": float(g["score"]) if g["score"] else np.nan,
+            "fid": "",
         })
-    return pd.DataFrame(rows, columns=["name", "pos", "team", "price", "own_pct", "form", "score"])
+    return pd.DataFrame(rows, columns=PLAYER_LIST_COLS)
+
+
+_LIST_COLS = {
+    "name": ("player", "name", "player name"), "pos": ("pos", "position"), "team": ("team", "club"),
+    "price": ("price", "salary", "cost"), "own_pct": ("own %", "own%", "own", "ownership", "owned"),
+    "form": ("form",), "score": ("score", "points", "pts"),
+    "fid": ("fanteam id", "fanteam_id", "player id", "playerid", "id"),
+}
+
+
+def parse_player_list(data: bytes, filename: str = "") -> pd.DataFrame:
+    """Read an uploaded Fanteam player list: a CSV with headers, or text copied from the Fanteam table."""
+    text = data.decode("utf-8-sig", errors="replace")
+    try:
+        raw = pd.read_csv(io.StringIO(text), sep=None, engine="python", dtype=str)
+    except (pd.errors.ParserError, pd.errors.EmptyDataError, ValueError):
+        raw = pd.DataFrame()
+    lower = {str(c).strip().lower(): c for c in raw.columns}
+    pick = {k: next((lower[a] for a in alts if a in lower), None) for k, alts in _LIST_COLS.items()}
+    if len(raw) and pick["name"] and pick["pos"] and pick["team"] and pick["price"]:
+        def num(col):
+            if col is None:
+                return pd.Series(np.nan, index=raw.index)
+            return pd.to_numeric(raw[col].astype(str).str.replace(r"[^0-9.\-]", "", regex=True), errors="coerce")
+
+        out = pd.DataFrame({
+            "name": raw[pick["name"]].astype(str).str.strip(),
+            "pos": (raw[pick["pos"]].astype(str).str.upper().str.strip()
+                    .replace({"DEF": "DST", "D/ST": "DST", "DS": "DST", "D": "DST"})),
+            "team": raw[pick["team"]].astype(str).str.upper().str.strip(),
+            "price": num(pick["price"]), "own_pct": num(pick["own_pct"]),
+            "form": num(pick["form"]), "score": num(pick["score"]),
+            "fid": (raw[pick["fid"]].astype(str).str.replace(r"\.0$", "", regex=True) if pick["fid"]
+                    else pd.Series("", index=raw.index)),
+        })
+        return out[out["pos"].isin(POS_ORDER) & out["price"].notna()].reset_index(drop=True)[PLAYER_LIST_COLS]
+    return parse_fanteam_table(text)
 
 
 def _match_row(d: pd.DataFrame, name: str, pos: str, team: str, cutoff: float = 0.7):
@@ -352,7 +393,7 @@ def add_unprojected(d: pd.DataFrame, price_df: pd.DataFrame) -> tuple[pd.DataFra
             continue
         rows.append({"name": r.name, "pos": r.pos, "team": r.team, "opp": opp_of.get(r.team, ""), "salary": r.price,
                      "proj": proj, "status": "expected", "form": r.form, "last": np.nan, "total": np.nan,
-                     "fid": "", "value": proj / r.price, "proj_src": "fallback"})
+                     "fid": str(getattr(r, "fid", "") or ""), "value": proj / r.price, "proj_src": "fallback"})
         added.append(r.name)
     if rows:
         d = pd.concat([d, pd.DataFrame(rows)], ignore_index=True)
@@ -1067,3 +1108,26 @@ def auto_portfolio(pool: pd.DataFrame, rules: Rules, cfg: dict, progress=None) -
                  f"{len(field_l)}-lineup ownership-weighted field, using a '{cfg['ladder']}' payout curve.")
     return {"pool": pool, "lineups": chosen, "stats": stats, "notes": notes, "field_baseline": baseline,
             "portfolio": portfolio}
+
+
+# --------------------------------------------------------------------------
+# 8. Fanteam lineup upload file
+# --------------------------------------------------------------------------
+def upload_csv_text(rows: Sequence[Sequence]) -> str:
+    """Fanteam upload layout: no header, one lineup per line, LF line endings, no trailing newline."""
+    return "\n".join(",".join(str(v) for v in r) for r in rows)
+
+
+def fanteam_upload(result: dict, rules: Rules, contest_id: str) -> tuple[str, list[str]]:
+    """(csv text, names missing a Fanteam ID). Row = contest id, then player ids in slot order."""
+    pool = result["pool"]
+    rows, missing = [], []
+    for L in result["lineups"]:
+        row = [contest_id]
+        for _, i in order_slots(pool, L, rules):
+            fid = str(pool.at[i, "fid"]).strip()
+            if not fid or fid.lower() == "nan":
+                missing.append(str(pool.at[i, "name"]))
+            row.append(fid)
+        rows.append(row)
+    return upload_csv_text(rows), sorted(set(missing))
