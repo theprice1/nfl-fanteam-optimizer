@@ -58,6 +58,8 @@ def cb_fetch() -> None:
     try:
         res = scraper.scrape()
         st.session_state["fetched"] = {k: res[k] for k in ("players", "games", "week", "updated")}
+        if res["week"]:
+            st.session_state["slate_name"] = f"NFL Week {res['week']}"
         st.session_state["fetch_msg"] = (f"Fetched week {res['week']} (page updated {res['updated']}): "
                                          f"{len(res['players'])} players, {len(res['games'])} games.")
     except (OSError, ValueError, RuntimeError, KeyError) as exc:  # network or page-layout problem: show it
@@ -540,8 +542,11 @@ with tab_build:
             st.dataframe(qb_names.value_counts().rename("lineups").reset_index().rename(columns={"index": "QB", "name": "QB"}),
                          hide_index=True)
         st.markdown("##### Upload file for Fanteam")
-        contest_id = st.text_input("Fanteam contest ID", key="contest_id",
-                                   help="The number in the first column of a Fanteam upload file for this contest")
+        st.caption("Use this one for Fanteam's CSV upload. The lineups CSV further down has player names for your own "
+                   "reference and will be rejected by Fanteam (its first column is the lineup number).")
+        contest_id = st.text_input("Fanteam tournament ID", key="contest_id",
+                                   help="The number in the first column of a Fanteam upload file for this tournament. "
+                                        "Fanteam addresses look like .../fantasy/dashboard/<tournament id>/...")
         cid = re.sub(r"\D", "", contest_id or "")
         if cid:
             up_text, no_id = E.fanteam_upload(res, rl, cid)
@@ -549,11 +554,11 @@ with tab_build:
                 st.warning("No Fanteam ID for: " + ", ".join(no_id) + ". Load a Fanteam player list that includes IDs "
                            "(sidebar) or upload the projections CSV, then rebuild.")
             st.download_button("Download Fanteam upload (CSV)", up_text, file_name=f"fanteam_nfl_upload_{cid}.csv",
-                               mime="text/csv", disabled=bool(no_id))
+                               mime="text/csv", type="primary", disabled=bool(no_id))
         else:
-            st.caption("Enter the contest ID to enable the Fanteam upload file.")
+            st.caption("Enter the tournament ID to enable the Fanteam upload file.")
         d1, d2 = st.columns(2)
-        d1.download_button("Download lineups (CSV)", E.lineups_to_frame(res, rl).to_csv(index=False),
+        d1.download_button("Download lineups with names (reference)", E.lineups_to_frame(res, rl).to_csv(index=False),
                            file_name=f"{slate_name.replace(' ', '_').lower()}_{k}_lineups.csv", mime="text/csv")
         d2.download_button("Download exposure (CSV)", ex.to_csv(index=False),
                            file_name=f"{slate_name.replace(' ', '_').lower()}_{k}_exposure.csv", mime="text/csv")
